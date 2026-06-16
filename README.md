@@ -1,6 +1,6 @@
 # DorkWay
 
-A Chrome extension that assists **authorised** security researchers and OSINT
+A Chrome extension that assists security researchers and OSINT
 analysts during Google dorking sessions. DorkWay activates on Google Search results pages,
 extracts every result as a structured entity, organises them by domain hierarchy, auto-tags
 them, and provides live filtering, export, and webhook push — all from a persistent side panel.
@@ -46,9 +46,9 @@ Requires Chrome 114+ (for `chrome.sidePanel`).
 
 ### Using it
 
-Or you can directly use Build tab inside the extension to build your dorks and run it.
+You can directly use **Build** tab inside the extension to build your dorks and run it.
 
-ALternatively:
+Alternatively:
 1. Run any search on `https://www.google.com/search?q=...`. DorkWay captures the page
    automatically; an on-page pill shows progress.
 2. Open the side panel to see results grouped by **root domain → subdomain**, with auto-tags,
