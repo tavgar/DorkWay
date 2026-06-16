@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DorkWay</title>
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+  <body>
+    <!-- First-run ethical disclaimer -->
+    <div id="disclaimer" class="overlay hidden">
+      <div class="overlay-card">
+        <h2>⚖️ Authorised use only</h2>
+        <p>
+          DorkWay is for <strong>authorised security research and OSINT</strong>. Only run it
+          against assets you own or are explicitly permitted to test. You are responsible for
+          complying with all applicable laws, scope agreements and Google's Terms of Service.
+        </p>
+        <p class="muted">
+          The optional status-code check sends outbound HTTP requests directly to target domains.
+        </p>
+        <label class="check"><input type="checkbox" id="disclaimer-ack" /> I understand and have authorisation.</label>
+        <button id="disclaimer-ok" class="primary" disabled>Continue</button>
+      </div>
+    </div>
+
+    <header>
+      <div class="brand"><span class="logo">🔎</span> DorkWay</div>
+      <div class="session-bar">
+        <select id="session-select" title="Active session"></select>
+        <button id="new-session" title="New session">＋</button>
+      </div>
+    </header>
+
+    <nav class="tabs">
+      <button data-tab="results" class="active">Results <span id="count-badge" class="badge">0</span></button>
+      <button data-tab="build">Build</button>
+      <button data-tab="export">Export</button>
+      <button data-tab="settings">Settings</button>
+    </nav>
+
+    <div id="status-line" class="status-line hidden"></div>
+    <div id="cap-banner" class="cap-banner hidden"></div>
+
+    <!-- RESULTS -->
+    <section id="tab-results" class="tab-panel active">
+      <div class="toolbar">
+        <input type="search" id="filter-keyword" placeholder="Keyword (title, snippet, path)…" />
+        <button id="toggle-filters" class="ghost">Filters ▾</button>
+      </div>
+
+      <div id="filters" class="filters hidden">
+        <p class="muted small">Click a chip to <b>include</b>, right-click to <b>exclude</b>.</p>
+        <div class="filter-group"><h4>Root domain</h4><div id="filter-root" class="chips"></div></div>
+        <div class="filter-group"><h4>Subdomain</h4><div id="filter-sub" class="chips"></div></div>
+        <div class="filter-group"><h4>File type</h4><div id="filter-ft" class="chips"></div></div>
+        <div class="filter-group"><h4>Tags</h4><div id="filter-tags" class="chips"></div></div>
+        <div class="filter-group"><h4>Status</h4><div id="filter-status" class="chips"></div></div>
+        <button id="clear-filters" class="ghost small">Clear all filters</button>
+      </div>
+
+      <div class="results-controls">
+        <span id="result-summary" class="muted small"></span>
+        <span class="spacer"></span>
+        <button id="expand-all" class="ghost small">Expand</button>
+        <button id="collapse-all" class="ghost small">Collapse</button>
+      </div>
+
+      <div id="tree" class="tree"></div>
+      <div id="empty" class="empty">No results captured yet. Run a search on Google, or use the <b>Build</b> tab.</div>
+    </section>
+
+    <!-- BUILD -->
+    <section id="tab-build" class="tab-panel">
+      <h3>Dork builder</h3>
+      <label>site: <input id="b-site" placeholder="target.com" /></label>
+      <label>inurl: <input id="b-inurl" placeholder="admin" /></label>
+      <label>intitle: <input id="b-intitle" placeholder="index of" /></label>
+      <label>filetype:
+        <select id="b-filetype">
+          <option value="">—</option>
+          <option>pdf</option><option>sql</option><option>xml</option><option>env</option>
+          <option>bak</option><option>txt</option><option>csv</option><option>json</option>
+          <option>log</option><option>xls</option><option>conf</option><option>ini</option>
+        </select>
+      </label>
+      <div class="row">
+        <label>after: <input id="b-after" type="date" /></label>
+        <label>before: <input id="b-before" type="date" /></label>
+      </div>
+      <label>Free terms <input id="b-free" placeholder="password OR secret" /></label>
+
+      <div class="preview">
+        <code id="query-preview"></code>
+      </div>
+      <div class="row">
+        <label class="check"><input type="checkbox" id="b-autopage" checked /> Auto-paginate all pages after opening</label>
+      </div>
+      <div class="row">
+        <button id="b-open" class="primary">Open search &amp; capture</button>
+      </div>
+
+      <hr />
+      <h3>Coverage / query slicing</h3>
+      <p class="muted small">When Google caps results (~300), slice the current query so each slice stays under the cap. Suggestions are built from what's already been discovered.</p>
+      <div class="row">
+        <button id="start-pagination" class="primary" title="Walk every page until Google runs out of results (or shows a CAPTCHA). Ignores the page count Google reports, since more pages keep appearing as you go.">Auto-paginate current tab (all pages)</button>
+        <button id="skip-query" class="ghost" title="Abandon the rest of the query being walked and jump to the next queued one (auto-split runs).">Skip query</button>
+        <button id="pause-pagination" class="ghost" data-mode="pause" title="Pause the walk; click again to resume from where it stopped.">Pause</button>
+        <button id="stop-pagination" class="ghost">Stop</button>
+      </div>
+      <div class="row">
+        <button id="suggest-splits" class="ghost">Suggest query splits</button>
+        <button id="auto-split" class="primary" title="Run every suggested split query back-to-back, fully paginating and capturing each one. Shares one tab; stops on CAPTCHA.">Auto split &amp; capture all</button>
+      </div>
+      <div id="splits" class="splits"></div>
+    </section>
+
+    <!-- EXPORT -->
+    <section id="tab-export" class="tab-panel">
+      <h3>Export</h3>
+      <p class="muted small">Exports apply your current filters — what you see is what you export (<span id="export-count">0</span> results).</p>
+      <div class="row">
+        <button id="export-json" class="ghost">JSON</button>
+        <button id="export-csv" class="ghost">CSV</button>
+        <button id="export-md" class="ghost">Markdown</button>
+      </div>
+
+      <hr />
+      <h3>Send to DB / webhook</h3>
+      <p class="muted small">POSTs the filtered results to your configured webhook in batches of 100 (retry ×3). Configure the URL &amp; secret in Settings.</p>
+      <button id="push-webhook" class="primary">Push filtered results</button>
+      <div id="push-result" class="muted small"></div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="tab-settings" class="tab-panel">
+      <h3>Settings</h3>
+      <label>Webhook URL <input id="s-webhook" placeholder="http://localhost:8787/ingest" /></label>
+      <label>Webhook secret <input id="s-secret" type="password" placeholder="shared secret" /></label>
+      <hr />
+      <label class="check"><input type="checkbox" id="s-status" /> Enable status-code checks (HEAD requests to targets)</label>
+      <p class="muted small">⚠ Generates outbound traffic to target domains. Off by default.</p>
+      <button id="run-status" class="ghost">Check statuses now</button>
+      <div id="status-progress" class="muted small"></div>
+      <hr />
+      <label>Max pages per query slice <input id="s-maxpages" type="number" min="1" max="50" /></label>
+      <div class="row">
+        <label>Min delay (ms) <input id="s-mindelay" type="number" min="0" /></label>
+        <label>Max delay (ms) <input id="s-maxdelay" type="number" min="0" /></label>
+      </div>
+      <label class="check"><input type="checkbox" id="s-filter" /> Append &amp;filter=0 (surface omitted results)</label>
+      <button id="save-settings" class="primary">Save settings</button>
+      <div id="settings-saved" class="muted small"></div>
+    </section>
+
+    <script type="module" src="panel.js"></script>
+  </body>
+</html>

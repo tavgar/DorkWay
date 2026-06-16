@@ -1,0 +1,61 @@
+{
+  "manifest_version": 3,
+  "name": "DorkWay",
+  "version": "1.2.0",
+  "description": "OSINT/recon assistant for authorised Google dorking — captures, organises, tags, filters and exports SERP results.",
+  "minimum_chrome_version": "114",
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://www.google.com/*",
+    "https://www.google.co.uk/*",
+    "https://www.google.ca/*",
+    "https://www.google.de/*",
+    "https://www.google.fr/*",
+    "https://www.google.com.au/*",
+    "https://www.google.co.in/*"
+  ],
+  "optional_host_permissions": [
+    "*://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "sidepanel/panel.html"
+  },
+  "action": {
+    "default_title": "Open DorkWay"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.google.com/search*",
+        "https://www.google.co.uk/search*",
+        "https://www.google.ca/search*",
+        "https://www.google.de/search*",
+        "https://www.google.fr/search*",
+        "https://www.google.com.au/search*",
+        "https://www.google.co.in/search*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["lib/*.js"],
+      "matches": ["https://*.google.com/*", "https://*.google.co.uk/*", "https://*.google.ca/*", "https://*.google.de/*", "https://*.google.fr/*", "https://*.google.com.au/*", "https://*.google.co.in/*"]
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
