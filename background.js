@@ -694,11 +694,11 @@ const TRIAGE_MAX_ITERS = 8;
 // deciding for itself what is interesting, before writing the final report.
 const TRIAGE_SYSTEM = `You are a senior offensive-security / OSINT reconnaissance analyst operating as an autonomous agent. The operator is running DorkWay on an AUTHORISED engagement and has captured Google-dork search results into a session. The user is not watching in real time — investigate on your own and only stop when you have produced the final report.
 
-You are given, up front: the dork queries that were run, and the operator's CURRENT FILTERED RESULTS (their focus). The session usually holds many more captured results than you were handed. You have one tool:
+You are given, up front: the dork queries that were run, and an INVENTORY OVERVIEW of the captured corpus — per-value counts of root domains, subdomains, file types, tags and HTTP statuses (the same facets as the operator's Results filter tab). You are NOT given the raw results; you must retrieve them yourself. You have one tool:
 
-get_results(rootDomain?, subdomain?, tag?, fileType?, keyword?, status?, limit?) — searches the FULL set of already-captured results for this session and returns the matches (it does not touch the network or run new Google searches). Use it to go beyond the filtered set: pull a specific domain or subdomain, everything with a tag (e.g. login, admin, api, config, backup, sensitive, debug, database), a filetype (e.g. sql, env, bak), a keyword across title/snippet/url/path, or by HTTP status. Each call reports how many total matched so you know if you are missing some.
+get_results(rootDomain?, subdomain?, tag?, fileType?, keyword?, status?, limit?) — searches the FULL set of already-captured results for this session and returns the matching records (it does not touch the network or run new Google searches). This is your only way to see actual URLs/titles/snippets. Pull a specific domain or subdomain, everything with a tag (e.g. login, admin, api, config, backup, sensitive, debug, database), a filetype (e.g. sql, env, bak), a keyword across title/snippet/url/path, or by HTTP status. Each call reports how many total matched so you know if you are missing some.
 
-Work like an analyst: start from the filtered set and the queries to understand what was hunted, then issue a few targeted get_results calls to investigate the leads that look interesting (sensitive tags, unusual subdomains, exposed file types, anomalous hosts). Don't dump the entire corpus blindly — query with intent. When you have enough to be confident, stop calling tools and write the report.
+Work like an analyst: read the overview and the queries to understand what was captured, then issue targeted get_results calls to pull the records that look interesting (sensitive tags, unusual subdomains, exposed file types, anomalous hosts). Don't dump the entire corpus blindly — query with intent, guided by the counts in the overview. When you have enough to be confident, stop calling tools and write the report.
 
 Final output — Markdown with these sections:
 1. **Summary** — 2-3 sentences on scope and what stands out.
@@ -724,7 +724,7 @@ const GET_RESULTS_SCHEMA = {
 };
 
 const GET_RESULTS_DESC =
-  "Search the operator's ALREADY-CAPTURED DorkWay results for this session (no network access, no new Google searches). Returns matching results plus the total match count. Use it to pull more than the filtered set you were given.";
+  "Search the operator's ALREADY-CAPTURED DorkWay results for this session (no network access, no new Google searches). Returns matching records plus the total match count. You were given only an inventory overview, not the results themselves — this is the only way to retrieve the actual records.";
 
 // One run at a time; STOP_TRIAGE aborts via this controller.
 let triageController = null;
@@ -735,7 +735,6 @@ async function onRunTriage(msg) {
     return { ok: false, error: 'No API key — open LLM Settings and add one.' };
   }
 
-  const filtered = Array.isArray(msg.entities) ? msg.entities : [];
   const sessionId = await getActiveSessionId();
   const all = await getResults(sessionId);
   if (!all.length) return { ok: false, error: 'No results to triage in this session.' };
@@ -750,13 +749,15 @@ async function onRunTriage(msg) {
     }
   }
 
+  // The agent is NOT handed raw results (would overload its context). It gets an
+  // inventory overview — the same facet breakdown the Results filter tab shows —
+  // and pulls the actual records itself via get_results.
   const initialPayload = JSON.stringify({
     session: { name: session?.name || '' },
     queries: [...queries],
-    note: `You were handed the ${filtered.length} filtered result(s) the operator is focused on. The session holds ${all.length} captured result(s) in total — call get_results to retrieve the rest and investigate what looks interesting.`,
-    filteredCount: filtered.length,
+    note: `This is an inventory overview of the ${all.length} captured result(s) in this session — per-value counts of root domains, subdomains, file types, tags and HTTP statuses (the same breakdown as the operator's Results filter tab). You were NOT given the raw results. Call get_results to retrieve the actual records for whatever you decide to investigate.`,
     totalCount: all.length,
-    results: filtered
+    overview: buildTriageOverview(all)
   });
 
   triageController = new AbortController();
@@ -777,6 +778,36 @@ async function onRunTriage(msg) {
   } finally {
     triageController = null;
   }
+}
+
+// Aggregate the captured corpus into the same facets the Results filter tab shows
+// (root domains, subdomains, file types, tags, HTTP statuses) with per-value counts,
+// each as compact "value (count)" strings sorted by count. This is the agent's map
+// of what exists — it pulls the actual records via get_results. Capped per facet to
+// keep the agent's context small.
+function buildTriageOverview(all) {
+  const root = new Map(), sub = new Map(), ft = new Map(), tags = new Map(), status = new Map();
+  const bump = (m, k) => m.set(k, (m.get(k) || 0) + 1);
+  for (const r of all) {
+    bump(root, r.rootDomain || '(unknown)');
+    bump(sub, r.subdomain || '(root)');
+    if (r.fileType) bump(ft, r.fileType);
+    for (const t of r.tags || []) bump(tags, t);
+    if (r.statusCode) bump(status, String(r.statusCode));
+  }
+  const top = (m, n) => {
+    const entries = [...m.entries()].sort((a, b) => b[1] - a[1]);
+    const out = entries.slice(0, n).map(([value, count]) => `${value} (${count})`);
+    if (entries.length > n) out.push(`…and ${entries.length - n} more`);
+    return out;
+  };
+  return {
+    rootDomains: top(root, 60),
+    subdomains: top(sub, 100),
+    fileTypes: top(ft, 40),
+    tags: top(tags, 40),
+    statuses: top(status, 20)
+  };
 }
 
 // Run get_results against the full captured corpus. Pure in-memory filtering —

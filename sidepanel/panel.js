@@ -646,21 +646,6 @@ function wireTriage() {
 // Compact a result to the fields the agent needs for its initial (filtered)
 // context. Snippet is truncated to keep the payload small; the agent pulls more
 // of the captured corpus itself via the get_results tool.
-function triageEntity(r) {
-  return {
-    title: r.title,
-    url: r.url,
-    rootDomain: r.rootDomain,
-    subdomain: r.subdomain,
-    path: r.path,
-    fileType: r.fileType,
-    tags: r.tags,
-    sourceQuery: r.sourceQuery,
-    statusCode: r.statusCode,
-    snippet: (r.snippet || '').slice(0, 200)
-  };
-}
-
 async function runTriage() {
   if (!state.results.length) {
     setTriageStatus('No results in this session — capture some first.', true);
@@ -685,16 +670,14 @@ async function runTriage() {
     }
   }
 
-  // Hand the agent the operator's current filtered view as its starting context;
-  // it pulls more of the captured corpus itself via get_results. Fall back to all
-  // results if the filters currently hide everything.
-  const initial = state.filtered.length ? state.filtered : state.results;
-  const entities = initial.map(triageEntity);
+  // The agent is not handed raw results — the background builds an inventory
+  // overview from the full captured corpus and the agent pulls records itself
+  // via get_results. Nothing result-shaped needs to go over this message.
   resetTriageOutput();
   setTriageRunning(true);
-  setTriageStatus(`Agent triaging — ${entities.length} filtered of ${state.results.length} captured…`);
+  setTriageStatus(`Agent triaging — ${state.results.length} captured result(s)…`);
 
-  const r = await msg({ type: 'RUN_TRIAGE', entities });
+  const r = await msg({ type: 'RUN_TRIAGE' });
   // The stream drives the UI via broadcasts; only surface a synchronous failure here.
   if (r && r.ok === false && !$('triage-output').textContent) {
     setTriageStatus(`⚠ ${r.error}`, true);
