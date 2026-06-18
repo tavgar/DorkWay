@@ -144,22 +144,48 @@
     <!-- AI TRIAGE -->
     <section id="tab-triage" class="tab-panel">
       <h3>AI Triage</h3>
-      <p class="muted small">
-        Feeds the captured results <b>and</b> the dork queries that produced them to an LLM,
-        which deduplicates the noise into an inventory of <b>unique assets</b> and highlights
-        high-value findings. <b>Authorised use only</b> — your results and queries are sent to
-        the configured provider.
-      </p>
-      <p class="muted small" id="triage-meta"></p>
-      <div class="row">
-        <button id="llm-settings-open" class="ghost">LLM Settings</button>
-        <button id="run-triage" class="primary">Run Triage</button>
-        <button id="stop-triage" class="ghost" disabled>Stop</button>
-        <span class="spacer"></span>
-        <button id="copy-triage" class="ghost small">Copy</button>
+      <div class="subtabs">
+        <button id="triage-subtab-run" class="subtab active" data-subtab="run">Run</button>
+        <button id="triage-subtab-history" class="subtab" data-subtab="history">History</button>
       </div>
-      <div id="triage-status" class="muted small"></div>
-      <div id="triage-output" class="triage-output hidden"></div>
+
+      <div id="triage-run-view">
+        <p class="muted small">
+          Feeds the captured results <b>and</b> the dork queries that produced them to an LLM,
+          which deduplicates the noise into an inventory of <b>unique assets</b> and highlights
+          high-value findings. <b>Authorised use only</b> — your results and queries are sent to
+          the configured provider.
+        </p>
+        <p class="muted small" id="triage-meta"></p>
+        <div class="row">
+          <button id="llm-settings-open" class="ghost">LLM Settings</button>
+          <button id="run-triage" class="primary">Run Triage</button>
+          <button id="stop-triage" class="ghost" disabled>Stop</button>
+          <span class="spacer"></span>
+          <button id="copy-triage" class="ghost small">Copy</button>
+        </div>
+        <div id="triage-status" class="muted small"></div>
+        <div id="triage-output" class="triage-output hidden"></div>
+      </div>
+
+      <div id="triage-history-view" class="hidden">
+        <div class="row">
+          <span class="muted small">Completed triage runs are saved here automatically.</span>
+          <span class="spacer"></span>
+          <button id="triage-history-clear" class="ghost small">Clear all</button>
+        </div>
+        <div id="triage-history-list"></div>
+        <div id="triage-history-detail" class="hidden">
+          <div class="row">
+            <button id="triage-history-back" class="ghost small">← Back</button>
+            <span class="spacer"></span>
+            <button id="triage-history-copy" class="ghost small">Copy</button>
+            <button id="triage-history-delete" class="ghost small">Delete</button>
+          </div>
+          <p class="muted small" id="triage-history-meta"></p>
+          <div id="triage-history-report" class="triage-output"></div>
+        </div>
+      </div>
     </section>
 
     <!-- EXPORT -->

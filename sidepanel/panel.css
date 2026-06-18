@@ -153,6 +153,47 @@ button.small { padding: 3px 8px; font-size: 11px; }
 .triage-think { color: var(--muted); font-style: italic; border-left: 2px solid var(--border); padding-left: 8px; margin: 4px 0; }
 .triage-tool { color: #fde68a; font-family: ui-monospace, monospace; font-size: 11px; margin: 4px 0; }
 
+/* Rendered Markdown report (answer). Override pre-wrap so block elements lay out
+   (selector outranks `.triage-output > div` so `normal` wins). */
+.triage-output > .triage-answer { white-space: normal; }
+.triage-answer h3, .triage-answer h4, .triage-answer h5, .triage-answer h6 {
+  margin: 12px 0 4px; font-size: 13px; font-weight: 600; color: var(--fg);
+}
+.triage-answer h3:first-child, .triage-answer h4:first-child { margin-top: 0; }
+.triage-answer p { margin: 4px 0; }
+.triage-answer ul, .triage-answer ol { margin: 4px 0; padding-left: 18px; }
+.triage-answer li { margin: 2px 0; }
+.triage-answer strong { font-weight: 600; }
+.triage-answer em { font-style: italic; }
+.triage-answer code {
+  font-family: ui-monospace, monospace; font-size: 11px;
+  background: var(--bg); padding: 1px 4px; border-radius: 4px;
+}
+.triage-answer a { color: #93c5fd; text-decoration: underline; word-break: break-all; }
+.triage-answer hr { border: 0; border-top: 1px solid var(--border); margin: 8px 0; }
+
+/* Triage sub-tabs (Run / History) */
+.subtabs { display: flex; gap: 6px; margin-bottom: 10px; }
+.subtabs .subtab {
+  flex: 1; background: var(--bg2); color: var(--muted);
+  border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; font-size: 12px;
+}
+.subtabs .subtab.active { background: var(--bg3); color: var(--fg); border-color: var(--primary); }
+
+/* Triage history list */
+.triage-history-item {
+  border: 1px solid var(--border); border-radius: 8px; background: var(--bg2);
+  padding: 8px 10px; margin-top: 8px; cursor: pointer;
+}
+.triage-history-item:hover { border-color: var(--primary); }
+.triage-history-item .hi-title { font-size: 12px; color: var(--fg); font-weight: 600; }
+.triage-history-item .hi-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.triage-history-item .hi-snippet {
+  font-size: 11px; color: var(--muted); margin-top: 4px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+#triage-history-meta { margin: 8px 0 4px; }
+
 .overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,.7); display: flex; align-items: center;
   justify-content: center; z-index: 50; padding: 16px;

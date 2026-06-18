@@ -635,17 +635,142 @@ function wireTriage() {
     setTimeout(() => ($('llm-settings-saved').textContent = ''), 2000);
   });
 
-  // Run / stop / copy.
+  // Run / stop / copy. Copy prefers the raw Markdown of the current run.
   $('run-triage').addEventListener('click', runTriage);
   $('stop-triage').addEventListener('click', () => msg({ type: 'STOP_TRIAGE' }));
   $('copy-triage').addEventListener('click', () => {
-    navigator.clipboard.writeText($('triage-output').textContent || '').catch(() => {});
+    navigator.clipboard.writeText(triageReportMd || $('triage-output').textContent || '').catch(() => {});
+  });
+
+  // Sub-tabs: Run vs History.
+  $('triage-subtab-run').addEventListener('click', () => showTriageSubtab('run'));
+  $('triage-subtab-history').addEventListener('click', () => showTriageSubtab('history'));
+  $('triage-history-back').addEventListener('click', renderTriageHistory);
+  $('triage-history-clear').addEventListener('click', async () => {
+    await chrome.storage.local.remove('triageHistory');
+    renderTriageHistory();
+  });
+  $('triage-history-copy').addEventListener('click', () => {
+    navigator.clipboard.writeText(currentHistoryReport || '').catch(() => {});
+  });
+  $('triage-history-delete').addEventListener('click', async () => {
+    if (!currentHistoryId) return;
+    const hist = await loadTriageHistory();
+    await chrome.storage.local.set({ triageHistory: hist.filter((h) => h.id !== currentHistoryId) });
+    renderTriageHistory();
   });
 }
 
-// Compact a result to the fields the agent needs for its initial (filtered)
-// context. Snippet is truncated to keep the payload small; the agent pulls more
-// of the captured corpus itself via the get_results tool.
+function showTriageSubtab(which) {
+  const run = which === 'run';
+  $('triage-subtab-run').classList.toggle('active', run);
+  $('triage-subtab-history').classList.toggle('active', !run);
+  $('triage-run-view').classList.toggle('hidden', !run);
+  $('triage-history-view').classList.toggle('hidden', run);
+  if (!run) renderTriageHistory();
+}
+
+// ---- triage history ----------------------------------------------------------
+
+const TRIAGE_HISTORY_CAP = 30;
+let currentHistoryId = null;     // entry shown in the detail view (for copy/delete)
+let currentHistoryReport = '';   // its raw Markdown
+
+async function loadTriageHistory() {
+  const r = await chrome.storage.local.get('triageHistory');
+  return Array.isArray(r.triageHistory) ? r.triageHistory : [];
+}
+
+// Persist the just-finished run. Newest first, capped to keep storage bounded.
+async function saveTriageRun(usage) {
+  const report = triageReportMd.trim();
+  if (!report) return;
+  const s = state.settings;
+  const entry = {
+    id: `t_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    ts: Date.now(),
+    sessionId: state.activeSessionId,
+    sessionName: currentSessionName(),
+    provider: s.llmProvider === 'openai' ? 'openai' : 'anthropic',
+    model: s.llmModel || (s.llmProvider === 'openai' ? 'gpt-4o' : 'claude-opus-4-8'),
+    outputTokens: usage ? (usage.output_tokens ?? usage.completion_tokens ?? null) : null,
+    report
+  };
+  const hist = await loadTriageHistory();
+  hist.unshift(entry);
+  await chrome.storage.local.set({ triageHistory: hist.slice(0, TRIAGE_HISTORY_CAP) });
+  if (!$('triage-history-view').classList.contains('hidden')) renderTriageHistory();
+}
+
+function currentSessionName() {
+  const opt = $('session-select').selectedOptions[0];
+  return (opt && opt.textContent) || 'Session';
+}
+
+// List view: render saved runs, newest first; clicking opens the detail view.
+async function renderTriageHistory() {
+  $('triage-history-detail').classList.add('hidden');
+  const listEl = $('triage-history-list');
+  listEl.classList.remove('hidden');
+  listEl.textContent = '';
+  const hist = await loadTriageHistory();
+  if (!hist.length) {
+    const empty = document.createElement('p');
+    empty.className = 'muted small';
+    empty.textContent = 'No past runs yet — run a triage and it will appear here.';
+    listEl.appendChild(empty);
+    return;
+  }
+  for (const entry of hist) {
+    const item = document.createElement('div');
+    item.className = 'triage-history-item';
+
+    const title = document.createElement('div');
+    title.className = 'hi-title';
+    title.textContent = entry.sessionName || 'Session';
+
+    const meta = document.createElement('div');
+    meta.className = 'hi-meta';
+    const tok = entry.outputTokens ? ` · ${entry.outputTokens} tok` : '';
+    meta.textContent = `${new Date(entry.ts).toLocaleString()} · ${entry.provider}/${entry.model}${tok}`;
+
+    const snip = document.createElement('div');
+    snip.className = 'hi-snippet';
+    snip.textContent = historySnippet(entry.report);
+
+    item.append(title, meta, snip);
+    item.addEventListener('click', () => showTriageHistoryDetail(entry));
+    listEl.appendChild(item);
+  }
+}
+
+// Detail view: render one stored report as Markdown (reusing the .triage-answer styles).
+function showTriageHistoryDetail(entry) {
+  currentHistoryId = entry.id;
+  currentHistoryReport = entry.report || '';
+  $('triage-history-list').classList.add('hidden');
+  $('triage-history-detail').classList.remove('hidden');
+  const tok = entry.outputTokens ? ` · ${entry.outputTokens} output tokens` : '';
+  $('triage-history-meta').textContent =
+    `${entry.sessionName || 'Session'} · ${new Date(entry.ts).toLocaleString()} · ${entry.provider}/${entry.model}${tok}`;
+  const report = $('triage-history-report');
+  report.textContent = '';
+  const ans = document.createElement('div');
+  ans.className = 'triage-answer';
+  renderMarkdown(currentHistoryReport, ans);
+  report.appendChild(ans);
+}
+
+// Strip Markdown markers for a compact 2-line list preview.
+function historySnippet(md) {
+  return String(md || '')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/[#*`>_-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 160);
+}
+
 async function runTriage() {
   if (!state.results.length) {
     setTriageStatus('No results in this session — capture some first.', true);
@@ -688,12 +813,14 @@ async function runTriage() {
 // Streamed output is built from typed blocks (thinking / tool / answer) so each
 // can be styled, while staying XSS-safe (createElement + textContent, no innerHTML).
 let triageBlock = null;
+let triageReportMd = ''; // raw Markdown of the current run's answer(s), for copy + history
 
 function resetTriageOutput() {
   const out = $('triage-output');
   out.textContent = '';
   out.classList.remove('hidden');
   triageBlock = null;
+  triageReportMd = '';
 }
 
 function appendTriage(kind, text) {
@@ -702,10 +829,128 @@ function appendTriage(kind, text) {
     const el = document.createElement('div');
     el.className = `triage-${kind}`;
     out.appendChild(el);
-    triageBlock = { kind, el };
+    triageBlock = { kind, el, md: '' };
   }
-  triageBlock.el.textContent += text;
+  // The agent's report (answer) is Markdown — accumulate the raw text and re-render
+  // it as DOM on each delta. Thinking stays plain text (streams more smoothly and
+  // reads as a scratchpad, not a formatted document).
+  if (kind === 'answer') {
+    triageBlock.md += text;
+    triageReportMd += text;
+    renderMarkdown(triageBlock.md, triageBlock.el);
+  } else {
+    triageBlock.el.textContent += text;
+  }
   out.scrollTop = out.scrollHeight;
+}
+
+// Minimal, XSS-safe Markdown renderer for the agent's report. Builds DOM nodes
+// (createElement + textContent) — never innerHTML — so untrusted model output is
+// safe under MV3's strict CSP. Handles headings, ordered/unordered lists, bold,
+// italic, inline code, horizontal rules and http(s)/mailto links; anything else
+// renders as plain text.
+function renderMarkdown(md, container) {
+  container.textContent = '';
+  const lines = md.replace(/\r\n/g, '\n').split('\n');
+  let i = 0;
+  let list = null; // { el, ordered }
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    if (!line.trim()) { list = null; i++; continue; }
+
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) {
+      list = null;
+      const el = document.createElement('h' + Math.min(h[1].length + 2, 6)); // # -> h3
+      renderInline(h[2], el);
+      container.appendChild(el);
+      i++; continue;
+    }
+
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {
+      list = null;
+      container.appendChild(document.createElement('hr'));
+      i++; continue;
+    }
+
+    const ul = line.match(/^\s*[-*+]\s+(.*)$/);
+    const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (ul || ol) {
+      const ordered = !!ol;
+      if (!list || list.ordered !== ordered) {
+        list = { el: document.createElement(ordered ? 'ol' : 'ul'), ordered };
+        container.appendChild(list.el);
+      }
+      const li = document.createElement('li');
+      renderInline((ul || ol)[1], li);
+      list.el.appendChild(li);
+      i++; continue;
+    }
+
+    // Paragraph: gather consecutive lines until a blank line or a new block.
+    list = null;
+    const buf = [line];
+    i++;
+    while (i < lines.length && lines[i].trim() &&
+           !/^#{1,6}\s+/.test(lines[i]) &&
+           !/^\s*[-*+]\s+/.test(lines[i]) &&
+           !/^\s*\d+[.)]\s+/.test(lines[i])) {
+      buf.push(lines[i]);
+      i++;
+    }
+    const p = document.createElement('p');
+    renderInline(buf.join(' '), p);
+    container.appendChild(p);
+  }
+}
+
+// Inline Markdown: **bold**, *italic*, `code`, [text](url) and bare http(s) URLs.
+// Appends text nodes and elements to `parent`; bold/italic recurse so nesting works.
+// Unsafe link schemes degrade to plain text. Unmatched markers render literally.
+function renderInline(text, parent) {
+  const patterns = [
+    { re: /\*\*([^*]+)\*\*/, kind: 'strong' },
+    { re: /`([^`]+)`/, kind: 'code' },
+    { re: /\*([^*\n]+)\*/, kind: 'em' },
+    { re: /\[([^\]]+)\]\(([^)\s]+)\)/, kind: 'link' },
+    { re: /(https?:\/\/[^\s<>()]+)/, kind: 'autolink' }
+  ];
+  let rest = text;
+  while (rest) {
+    let best = null;
+    for (const p of patterns) {
+      const m = p.re.exec(rest);
+      if (m && (!best || m.index < best.m.index)) best = { p, m };
+    }
+    if (!best) { parent.appendChild(document.createTextNode(rest)); break; }
+    const { p, m } = best;
+    if (m.index > 0) parent.appendChild(document.createTextNode(rest.slice(0, m.index)));
+    if (p.kind === 'code') {
+      const el = document.createElement('code');
+      el.textContent = m[1];
+      parent.appendChild(el);
+    } else if (p.kind === 'link' || p.kind === 'autolink') {
+      const url = p.kind === 'link' ? m[2] : m[1];
+      const label = m[1];
+      if (/^(https?:|mailto:)/i.test(url)) {
+        const a = document.createElement('a');
+        a.href = url;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        a.textContent = label;
+        parent.appendChild(a);
+      } else {
+        parent.appendChild(document.createTextNode(m[0]));
+      }
+    } else {
+      const el = document.createElement(p.kind);
+      renderInline(m[1], el);
+      parent.appendChild(el);
+    }
+    rest = rest.slice(m.index + m[0].length);
+  }
 }
 
 function addTriageNote(text) {
@@ -785,6 +1030,7 @@ function wireRuntimeEvents() {
         setTriageRunning(false);
         const tok = m.usage ? ` · ${m.usage.output_tokens ?? m.usage.completion_tokens ?? '?'} output tokens` : '';
         setTriageStatus(m.aborted ? 'Stopped.' : `✓ Triage complete${m.note ? ' (' + m.note + ')' : ''}${tok}`);
+        if (!m.aborted) saveTriageRun(m.usage);
         break;
       }
       case 'TRIAGE_ERROR':
