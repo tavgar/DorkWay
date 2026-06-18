@@ -110,8 +110,9 @@ function createPill() {
   el.id = 'dorkway-pill';
   el.style.cssText = [
     'position:fixed', 'z-index:2147483647', 'bottom:16px', 'right:16px',
-    'font:12px/1.4 system-ui,sans-serif', 'padding:8px 12px', 'border-radius:999px',
-    'box-shadow:0 2px 10px rgba(0,0,0,.25)', 'color:#fff', 'background:#111827',
+    'font:12px/1.4 system-ui,sans-serif', 'padding:9px 14px', 'border-radius:999px',
+    'box-shadow:0 8px 24px -6px rgba(0,0,0,.5)', 'color:#fff', 'background:#0e131e',
+    'border:1px solid rgba(255,255,255,.12)', 'backdrop-filter:blur(8px)',
     'display:flex', 'align-items:center', 'gap:8px', 'cursor:pointer',
     'transition:opacity .4s'
   ].join(';');
@@ -124,9 +125,9 @@ function createPill() {
 }
 
 function setPill(el, text, kind) {
-  const colors = { busy: '#1d4ed8', warn: '#b45309', done: '#047857', muted: '#374151' };
-  el.style.background = colors[kind] || '#111827';
-  el.innerHTML = `<span style="font-weight:600">DorkWay</span><span>${escapeHtml(text)}</span>`;
+  const colors = { busy: '#4f46e5', warn: '#b45309', done: '#059669', muted: '#1f2937' };
+  el.style.background = colors[kind] || '#0e131e';
+  el.innerHTML = `<span style="font-weight:700;letter-spacing:-.01em">DorkWay</span><span style="opacity:.92">${escapeHtml(text)}</span>`;
 }
 
 function fadePill(el) {

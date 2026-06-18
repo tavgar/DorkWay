@@ -1100,7 +1100,7 @@ function setTriageRunning(running) {
 function setTriageStatus(text, warn = false) {
   const el = $('triage-status');
   el.textContent = text;
-  el.style.color = warn ? '#fca5a5' : '';
+  el.style.color = warn ? 'var(--err)' : '';
 }
 
 // A dismissible "run finished" banner shown in-panel on completion — complements
@@ -1199,7 +1199,7 @@ function setStatusLine(text, warn = false) {
   const el = $('status-line');
   el.textContent = text;
   el.classList.remove('hidden');
-  el.style.background = warn ? '#7c2d12' : '#0b3a67';
+  el.classList.toggle('warn', warn);
 }
 
 function showCapBanner(query) {
