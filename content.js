@@ -90,6 +90,19 @@
   setTimeout(() => fadePill(pill), 6000);
 })();
 
+// Once an extension reload/update orphans this page's content script,
+// chrome.runtime.sendMessage throws "Extension context invalidated" *synchronously*
+// — a trailing .catch() can't see that, so it surfaces as an uncaught rejection.
+// Guard every fire-and-forget message so a stale tab fails silently instead.
+async function safeSend(message) {
+  try {
+    if (!chrome.runtime?.id) return null; // context already gone
+    return await chrome.runtime.sendMessage(message);
+  } catch (_) {
+    return null;
+  }
+}
+
 // ---- on-page pill helpers -----------------------------------------------------
 
 function createPill() {
@@ -104,7 +117,7 @@ function createPill() {
   ].join(';');
   el.title = 'DorkWay — click to open the side panel from the toolbar icon';
   el.addEventListener('click', () => {
-    chrome.runtime.sendMessage({ type: 'OPEN_PANEL' }).catch(() => {});
+    safeSend({ type: 'OPEN_PANEL' });
   });
   (document.body || document.documentElement).appendChild(el);
   return el;
@@ -135,7 +148,7 @@ function addPauseButton(pill, navTimer) {
   btn.addEventListener('click', async (e) => {
     e.stopPropagation(); // don't trigger the pill's open-panel click
     if (navTimer) clearTimeout(navTimer); // cancel the pending next-page hop
-    await chrome.runtime.sendMessage({ type: 'PAUSE_PAGINATION' }).catch(() => {});
+    await safeSend({ type: 'PAUSE_PAGINATION' });
     setPill(pill, 'Paused', 'muted'); // wipes the pill, so re-add Resume after
     addResumeButton(pill);
   });
@@ -150,7 +163,7 @@ function addResumeButton(pill) {
     btn.disabled = true;
     setPill(pill, 'Resuming…', 'busy');
     // The service worker reloads this tab to re-enter the walk loop.
-    await chrome.runtime.sendMessage({ type: 'RESUME_PAGINATION' }).catch(() => {});
+    await safeSend({ type: 'RESUME_PAGINATION' });
   });
   pill.appendChild(btn);
 }
@@ -165,7 +178,7 @@ function addSkipButton(pill, navTimer, remaining) {
     if (navTimer) clearTimeout(navTimer); // cancel the pending next-page hop
     btn.disabled = true;
     setPill(pill, 'Skipping to next query…', 'busy');
-    const r = await chrome.runtime.sendMessage({ type: 'SKIP_QUERY' }).catch(() => null);
+    const r = await safeSend({ type: 'SKIP_QUERY' });
     // If there was a next query, the service worker navigates this tab to it. If
     // not, it stops the run and we stay put — reflect that here.
     if (r && r.stopped) setPill(pill, 'Done · no more queued queries', 'done');
@@ -180,7 +193,7 @@ function renderCaptchaBanner(pill) {
     e.stopPropagation();
     btn.disabled = true;
     // The service worker reloads this tab to re-enter the walk loop.
-    await chrome.runtime.sendMessage({ type: 'RESUME_PAGINATION' }).catch(() => {});
+    await safeSend({ type: 'RESUME_PAGINATION' });
   });
   pill.appendChild(btn);
 }
