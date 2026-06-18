@@ -39,6 +39,8 @@
         <label>API key <input id="llm-key" type="password" placeholder="sk-…" /></label>
         <label>Model <input id="llm-model" placeholder="claude-opus-4-8" /></label>
         <label>Max output tokens <input id="llm-maxtokens" type="number" min="256" max="128000" /></label>
+        <label class="check"><input type="checkbox" id="llm-thinking" /> Enable thinking / reasoning (models that support it)</label>
+        <p class="muted small">Anthropic uses adaptive thinking. For OpenAI-compatible this sends a reasoning request (OpenRouter-style) — turn it off for endpoints that reject it.</p>
         <p class="muted small">Stored locally in this browser profile, same as the webhook secret.</p>
         <button id="llm-settings-save" class="primary">Save</button>
         <button id="llm-settings-close" class="ghost" style="width:100%;margin-top:6px;">Close</button>

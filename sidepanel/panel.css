@@ -144,11 +144,14 @@ button.small { padding: 3px 8px; font-size: 11px; }
 }
 
 .triage-output {
-  white-space: pre-wrap; word-break: break-word;
   background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
   padding: 10px; margin-top: 8px; max-height: 60vh; overflow: auto;
   font-size: 12px; line-height: 1.5;
 }
+.triage-output > div { white-space: pre-wrap; word-break: break-word; }
+.triage-answer { color: var(--fg); }
+.triage-think { color: var(--muted); font-style: italic; border-left: 2px solid var(--border); padding-left: 8px; margin: 4px 0; }
+.triage-tool { color: #fde68a; font-family: ui-monospace, monospace; font-size: 11px; margin: 4px 0; }
 
 .overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,.7); display: flex; align-items: center;

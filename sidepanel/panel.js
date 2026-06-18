@@ -593,6 +593,7 @@ function applyLlmSettingsToForm() {
   $('llm-key').value = s.llmApiKey || '';
   $('llm-model').value = s.llmModel || '';
   $('llm-maxtokens').value = s.llmMaxTokens ?? 16000;
+  $('llm-thinking').checked = s.llmThinking !== false;
   $('llm-baseurl-hint').textContent = BASEURL_HINTS[$('llm-provider').value] || '';
 }
 
@@ -624,7 +625,8 @@ function wireTriage() {
       llmBaseUrl: $('llm-baseurl').value.trim(),
       llmApiKey: $('llm-key').value.trim(),
       llmModel: $('llm-model').value.trim(),
-      llmMaxTokens: clampInt($('llm-maxtokens').value, 256, 128000, 16000)
+      llmMaxTokens: clampInt($('llm-maxtokens').value, 256, 128000, 16000),
+      llmThinking: $('llm-thinking').checked
     };
     const r = await msg({ type: 'SAVE_SETTINGS', settings });
     state.settings = { ...state.settings, ...r.settings };
@@ -641,9 +643,9 @@ function wireTriage() {
   });
 }
 
-// Compact a result to the fields the model needs, tagged with whether it passes
-// the current filters so the model sees the operator's focus while still getting
-// every result. Snippet is truncated to keep the payload small.
+// Compact a result to the fields the agent needs for its initial (filtered)
+// context. Snippet is truncated to keep the payload small; the agent pulls more
+// of the captured corpus itself via the get_results tool.
 function triageEntity(r) {
   return {
     title: r.title,
@@ -655,8 +657,7 @@ function triageEntity(r) {
     tags: r.tags,
     sourceQuery: r.sourceQuery,
     statusCode: r.statusCode,
-    snippet: (r.snippet || '').slice(0, 200),
-    filtered: passesFilters(r)
+    snippet: (r.snippet || '').slice(0, 200)
   };
 }
 
@@ -684,11 +685,14 @@ async function runTriage() {
     }
   }
 
-  const entities = state.results.map(triageEntity);
-  $('triage-output').textContent = '';
-  $('triage-output').classList.remove('hidden');
+  // Hand the agent the operator's current filtered view as its starting context;
+  // it pulls more of the captured corpus itself via get_results. Fall back to all
+  // results if the filters currently hide everything.
+  const initial = state.filtered.length ? state.filtered : state.results;
+  const entities = initial.map(triageEntity);
+  resetTriageOutput();
   setTriageRunning(true);
-  setTriageStatus(`Triaging ${entities.length} results…`);
+  setTriageStatus(`Agent triaging — ${entities.length} filtered of ${state.results.length} captured…`);
 
   const r = await msg({ type: 'RUN_TRIAGE', entities });
   // The stream drives the UI via broadcasts; only surface a synchronous failure here.
@@ -696,6 +700,48 @@ async function runTriage() {
     setTriageStatus(`⚠ ${r.error}`, true);
     setTriageRunning(false);
   }
+}
+
+// Streamed output is built from typed blocks (thinking / tool / answer) so each
+// can be styled, while staying XSS-safe (createElement + textContent, no innerHTML).
+let triageBlock = null;
+
+function resetTriageOutput() {
+  const out = $('triage-output');
+  out.textContent = '';
+  out.classList.remove('hidden');
+  triageBlock = null;
+}
+
+function appendTriage(kind, text) {
+  const out = $('triage-output');
+  if (!triageBlock || triageBlock.kind !== kind) {
+    const el = document.createElement('div');
+    el.className = `triage-${kind}`;
+    out.appendChild(el);
+    triageBlock = { kind, el };
+  }
+  triageBlock.el.textContent += text;
+  out.scrollTop = out.scrollHeight;
+}
+
+function addTriageNote(text) {
+  const out = $('triage-output');
+  const el = document.createElement('div');
+  el.className = 'triage-tool';
+  el.textContent = text;
+  out.appendChild(el);
+  triageBlock = null; // force a fresh block for whatever streams next
+  out.scrollTop = out.scrollHeight;
+}
+
+// Compact one-line rendering of the agent's get_results arguments.
+function triageToolArgs(input) {
+  if (!input || typeof input !== 'object') return '';
+  return Object.entries(input)
+    .filter(([, v]) => v !== '' && v != null)
+    .map(([k, v]) => `${k}: ${v}`)
+    .join(', ');
 }
 
 function setTriageRunning(running) {
@@ -740,13 +786,22 @@ function wireRuntimeEvents() {
       case 'STATUS_PROGRESS':
         $('status-progress').textContent = `Checking… ${m.checked}/${m.total}`;
         break;
+      case 'TRIAGE_THINKING':
+        appendTriage('think', m.text);
+        break;
       case 'TRIAGE_DELTA':
-        $('triage-output').textContent += m.text;
+        appendTriage('answer', m.text);
+        break;
+      case 'TRIAGE_TOOL':
+        addTriageNote(`🔧 get_results(${triageToolArgs(m.input)})`);
+        break;
+      case 'TRIAGE_TOOL_RESULT':
+        addTriageNote(`↳ ${m.count}${m.total > m.count ? ' of ' + m.total : ''} captured result${m.total === 1 ? '' : 's'}`);
         break;
       case 'TRIAGE_DONE': {
         setTriageRunning(false);
         const tok = m.usage ? ` · ${m.usage.output_tokens ?? m.usage.completion_tokens ?? '?'} output tokens` : '';
-        setTriageStatus(m.aborted ? 'Stopped.' : `✓ Triage complete${tok}`);
+        setTriageStatus(m.aborted ? 'Stopped.' : `✓ Triage complete${m.note ? ' (' + m.note + ')' : ''}${tok}`);
         break;
       }
       case 'TRIAGE_ERROR':

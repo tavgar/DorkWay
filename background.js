@@ -32,7 +32,8 @@ const DEFAULT_SETTINGS = {
   llmBaseUrl: '',
   llmApiKey: '',
   llmModel: 'claude-opus-4-8',
-  llmMaxTokens: 16000
+  llmMaxTokens: 16000,
+  llmThinking: true
 };
 
 // ---- lifecycle ---------------------------------------------------------------
@@ -683,28 +684,47 @@ async function onGetBootstrap() {
   };
 }
 
-// ---- AI Triage (LLM) ---------------------------------------------------------
+// ---- AI Triage (agentic LLM) -------------------------------------------------
 
-// Recon-analyst persona. The operator runs DorkWay on an authorised engagement;
-// the model turns a noisy SERP dump into a deduplicated inventory of unique assets.
-const TRIAGE_SYSTEM = `You are a senior offensive-security / OSINT reconnaissance analyst. The operator is running DorkWay on an AUTHORISED engagement and has captured Google-dork search results. You will receive JSON with: the dork queries that were run, and the captured results (each result may carry a "filtered" flag indicating whether it is in the operator's current filtered view, and a "sourceQuery" showing which dork found it).
+// Safety cap on tool-use rounds, so a misbehaving model can't loop forever.
+const TRIAGE_MAX_ITERS = 8;
 
-Your job is to turn this noisy SERP dump into a concise, deduplicated inventory of UNIQUE ASSETS — the distinct things worth a human's attention:
-- unique hosts and subdomains,
-- distinct endpoints / paths / APIs (collapse pagination, tracking params and near-duplicate URLs into one asset),
-- exposed files, directory listings, backups, configs, logs,
-- login / admin / auth panels and dashboards,
-- notable technologies, CMS, frameworks revealed by the results.
+// Recon-analyst persona. The model is an AGENT: it starts from the operator's
+// filtered results and calls get_results to pull more of the captured corpus,
+// deciding for itself what is interesting, before writing the final report.
+const TRIAGE_SYSTEM = `You are a senior offensive-security / OSINT reconnaissance analyst operating as an autonomous agent. The operator is running DorkWay on an AUTHORISED engagement and has captured Google-dork search results into a session. The user is not watching in real time — investigate on your own and only stop when you have produced the final report.
 
-Use the dork queries to understand what was hunted and to judge what is interesting. Treat the "filtered" results as the operator's current focus, but still consider every result when deduplicating. Aggressively merge duplicates and drop obvious noise (marketing pages, unrelated third-party domains, trackers).
+You are given, up front: the dork queries that were run, and the operator's CURRENT FILTERED RESULTS (their focus). The session usually holds many more captured results than you were handed. You have one tool:
 
-Output Markdown with these sections:
+get_results(rootDomain?, subdomain?, tag?, fileType?, keyword?, status?, limit?) — searches the FULL set of already-captured results for this session and returns the matches (it does not touch the network or run new Google searches). Use it to go beyond the filtered set: pull a specific domain or subdomain, everything with a tag (e.g. login, admin, api, config, backup, sensitive, debug, database), a filetype (e.g. sql, env, bak), a keyword across title/snippet/url/path, or by HTTP status. Each call reports how many total matched so you know if you are missing some.
+
+Work like an analyst: start from the filtered set and the queries to understand what was hunted, then issue a few targeted get_results calls to investigate the leads that look interesting (sensitive tags, unusual subdomains, exposed file types, anomalous hosts). Don't dump the entire corpus blindly — query with intent. When you have enough to be confident, stop calling tools and write the report.
+
+Final output — Markdown with these sections:
 1. **Summary** — 2-3 sentences on scope and what stands out.
 2. **High-value findings** — sensitive/risky assets (admin, login, configs, backups, secrets, exposed listings, debug/error pages, internal APIs) with a one-line rationale and the URL.
-3. **Unique assets** — grouped by root domain → subdomain, one line per distinct asset (URL + what it is). Deduplicated.
-4. **Suggested next dorks** — gaps the queries did not cover, as concrete dork strings.
+3. **Unique assets** — grouped by root domain -> subdomain, one line per distinct asset (URL + what it is). Deduplicate aggressively; collapse pagination, tracking params and near-duplicate URLs; drop obvious noise (marketing pages, unrelated third-party domains, trackers).
+4. **Suggested next dorks** — gaps the queries and captured data did not cover, as concrete dork strings.
 
 Rules: assert only what the data supports — never invent hosts, paths or findings. Be concise. This is authorised security research; do not refuse triage of the supplied data.`;
+
+// JSON Schema for the single agent tool, shared by both providers' wrappers.
+const GET_RESULTS_SCHEMA = {
+  type: 'object',
+  properties: {
+    rootDomain: { type: 'string', description: 'Exact registrable domain to match, e.g. "target.com".' },
+    subdomain: { type: 'string', description: 'Substring match on the subdomain, e.g. "api".' },
+    tag: { type: 'string', description: 'Inferred tag, e.g. login, admin, api, config, backup, sensitive, debug, database.' },
+    fileType: { type: 'string', description: 'File extension, e.g. pdf, sql, env, bak, log.' },
+    keyword: { type: 'string', description: 'Case-insensitive substring across title, snippet, url and path.' },
+    status: { type: 'integer', description: 'HTTP status code to match; 0 means unchecked.' },
+    limit: { type: 'integer', description: 'Max results to return (default 100, capped at 300).' }
+  },
+  required: []
+};
+
+const GET_RESULTS_DESC =
+  "Search the operator's ALREADY-CAPTURED DorkWay results for this session (no network access, no new Google searches). Returns matching results plus the total match count. Use it to pull more than the filtered set you were given.";
 
 // One run at a time; STOP_TRIAGE aborts via this controller.
 let triageController = null;
@@ -715,41 +735,37 @@ async function onRunTriage(msg) {
     return { ok: false, error: 'No API key — open LLM Settings and add one.' };
   }
 
-  const entities = Array.isArray(msg.entities) ? msg.entities : [];
-  if (!entities.length) return { ok: false, error: 'No results to triage in this session.' };
-
+  const filtered = Array.isArray(msg.entities) ? msg.entities : [];
   const sessionId = await getActiveSessionId();
+  const all = await getResults(sessionId);
+  if (!all.length) return { ok: false, error: 'No results to triage in this session.' };
   const session = await getSession(sessionId);
 
-  // Queries the model gets to reason about: the session's recorded dork queries,
+  // Queries the agent gets to reason about: the session's recorded dork queries,
   // unioned with the distinct sourceQuery seen across the captured results.
   const queries = new Set((session?.queries || []).filter(Boolean));
-  for (const e of entities) {
-    for (const q of String(e.sourceQuery || '').split('\n')) {
+  for (const r of all) {
+    for (const q of String(r.sourceQuery || '').split('\n')) {
       if (q.trim()) queries.add(q.trim());
     }
   }
 
-  const payload = JSON.stringify({
+  const initialPayload = JSON.stringify({
     session: { name: session?.name || '' },
     queries: [...queries],
-    filterActive: entities.some((e) => e.filtered === false),
-    results: entities
+    note: `You were handed the ${filtered.length} filtered result(s) the operator is focused on. The session holds ${all.length} captured result(s) in total — call get_results to retrieve the rest and investigate what looks interesting.`,
+    filteredCount: filtered.length,
+    totalCount: all.length,
+    results: filtered
   });
-
-  const { url, headers, body } = settings.llmProvider === 'openai'
-    ? buildOpenAIRequest(settings, payload)
-    : buildAnthropicRequest(settings, payload);
 
   triageController = new AbortController();
   try {
-    const resp = await fetch(url, { method: 'POST', headers, body, signal: triageController.signal });
-    if (!resp.ok || !resp.body) {
-      const text = await resp.text().catch(() => '');
-      broadcast({ type: 'TRIAGE_ERROR', error: `HTTP ${resp.status} ${resp.statusText}${text ? ' — ' + text.slice(0, 300) : ''}` });
-      return { ok: false, error: `HTTP ${resp.status}` };
+    if (settings.llmProvider === 'openai') {
+      await runOpenAIAgent(settings, initialPayload, all);
+    } else {
+      await runAnthropicAgent(settings, initialPayload, all);
     }
-    await streamTriage(resp.body, settings.llmProvider);
     return { ok: true };
   } catch (err) {
     if (err && err.name === 'AbortError') {
@@ -763,90 +779,263 @@ async function onRunTriage(msg) {
   }
 }
 
-function buildAnthropicRequest(settings, payload) {
-  const base = (settings.llmBaseUrl || 'https://api.anthropic.com').replace(/\/+$/, '');
+// Run get_results against the full captured corpus. Pure in-memory filtering —
+// no network. Returns { total, returned, results } as a plain object.
+function executeGetResults(input, all) {
+  const f = input || {};
+  const kw = f.keyword ? String(f.keyword).toLowerCase() : null;
+  const matches = all.filter((r) => {
+    if (f.rootDomain && String(r.rootDomain || '').toLowerCase() !== String(f.rootDomain).toLowerCase()) return false;
+    if (f.subdomain && !String(r.subdomain || '').toLowerCase().includes(String(f.subdomain).toLowerCase())) return false;
+    if (f.fileType && String(r.fileType || '').toLowerCase() !== String(f.fileType).toLowerCase()) return false;
+    if (f.tag && !(r.tags || []).map((t) => String(t).toLowerCase()).includes(String(f.tag).toLowerCase())) return false;
+    if (f.status != null && f.status !== '' && Number(r.statusCode || 0) !== Number(f.status)) return false;
+    if (kw) {
+      const hay = `${r.title || ''}\n${r.snippet || ''}\n${r.url || ''}\n${r.path || ''}`.toLowerCase();
+      if (!hay.includes(kw)) return false;
+    }
+    return true;
+  });
+  const limit = Math.min(Math.max(parseInt(f.limit, 10) || 100, 1), 300);
+  return { total: matches.length, returned: Math.min(matches.length, limit), results: matches.slice(0, limit).map(compactEntity) };
+}
+
+function compactEntity(r) {
   return {
-    url: `${base}/v1/messages`,
-    headers: {
-      'content-type': 'application/json',
-      'x-api-key': settings.llmApiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true'
-    },
-    body: JSON.stringify({
-      model: settings.llmModel || 'claude-opus-4-8',
-      max_tokens: settings.llmMaxTokens || 16000,
-      stream: true,
-      thinking: { type: 'adaptive' },
-      output_config: { effort: 'medium' },
-      system: TRIAGE_SYSTEM,
-      messages: [{ role: 'user', content: payload }]
-    })
+    title: r.title,
+    url: r.url,
+    rootDomain: r.rootDomain,
+    subdomain: r.subdomain,
+    path: r.path,
+    fileType: r.fileType,
+    tags: r.tags,
+    statusCode: r.statusCode,
+    sourceQuery: r.sourceQuery,
+    snippet: (r.snippet || '').slice(0, 200)
   };
 }
 
-function buildOpenAIRequest(settings, payload) {
-  const base = (settings.llmBaseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
-  return {
-    url: `${base}/chat/completions`,
-    headers: {
-      'content-type': 'application/json',
-      'authorization': `Bearer ${settings.llmApiKey}`,
-      // OpenRouter rankings (ignored by other servers).
-      'HTTP-Referer': 'https://github.com/tavgar/DorkWay',
-      'X-Title': 'DorkWay'
-    },
-    body: JSON.stringify({
-      model: settings.llmModel || 'gpt-4o',
-      max_tokens: settings.llmMaxTokens || 16000,
-      stream: true,
-      messages: [
-        { role: 'system', content: TRIAGE_SYSTEM },
-        { role: 'user', content: payload }
-      ]
-    })
-  };
-}
-
-// Read an SSE stream, extract text deltas per provider, and broadcast them to the
-// panel. Both providers emit `data: {json}` lines; OpenAI terminates with [DONE].
-async function streamTriage(stream, provider) {
+// Generic SSE reader: line-buffers and calls onData(parsedJson) per `data:` line,
+// onData(null) on the OpenAI `[DONE]` sentinel.
+async function readSSE(stream, onData) {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  let usage = null;
-
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-
     let nl;
     while ((nl = buffer.indexOf('\n')) !== -1) {
       const line = buffer.slice(0, nl).trim();
       buffer = buffer.slice(nl + 1);
       if (!line.startsWith('data:')) continue;
       const data = line.slice(5).trim();
-      if (data === '[DONE]') { broadcast({ type: 'TRIAGE_DONE', usage }); return; }
-
+      if (data === '[DONE]') { onData(null); return; }
       let evt;
       try { evt = JSON.parse(data); } catch (_) { continue; }
-
-      if (provider === 'openai') {
-        const text = evt.choices?.[0]?.delta?.content;
-        if (text) broadcast({ type: 'TRIAGE_DELTA', text });
-        if (evt.usage) usage = evt.usage;
-      } else {
-        if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
-          broadcast({ type: 'TRIAGE_DELTA', text: evt.delta.text });
-        } else if (evt.type === 'message_delta' && evt.usage) {
-          usage = evt.usage;
-        } else if (evt.type === 'error') {
-          broadcast({ type: 'TRIAGE_ERROR', error: evt.error?.message || 'stream error' });
-          return;
-        }
-      }
+      onData(evt);
     }
   }
-  broadcast({ type: 'TRIAGE_DONE', usage });
+}
+
+// --- Anthropic agent loop ---
+
+async function runAnthropicAgent(settings, initialPayload, all) {
+  const base = (settings.llmBaseUrl || 'https://api.anthropic.com').replace(/\/+$/, '');
+  const url = `${base}/v1/messages`;
+  const headers = {
+    'content-type': 'application/json',
+    'x-api-key': settings.llmApiKey,
+    'anthropic-version': '2023-06-01',
+    'anthropic-dangerous-direct-browser-access': 'true'
+  };
+  const messages = [{ role: 'user', content: initialPayload }];
+  let usage = null;
+
+  for (let i = 0; i < TRIAGE_MAX_ITERS; i++) {
+    const body = {
+      model: settings.llmModel || 'claude-opus-4-8',
+      max_tokens: settings.llmMaxTokens || 16000,
+      stream: true,
+      system: TRIAGE_SYSTEM,
+      tools: [{ name: 'get_results', description: GET_RESULTS_DESC, input_schema: GET_RESULTS_SCHEMA }],
+      messages
+    };
+    if (settings.llmThinking) {
+      body.thinking = { type: 'adaptive', display: 'summarized' };
+      body.output_config = { effort: 'medium' };
+    }
+
+    const resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: triageController.signal });
+    if (!resp.ok || !resp.body) {
+      const text = await resp.text().catch(() => '');
+      broadcast({ type: 'TRIAGE_ERROR', error: `HTTP ${resp.status} ${resp.statusText}${text ? ' — ' + text.slice(0, 300) : ''}` });
+      return;
+    }
+
+    const turn = await parseAnthropicStream(resp.body);
+    usage = turn.usage || usage;
+    if (turn.stopReason !== 'tool_use') { broadcast({ type: 'TRIAGE_DONE', usage }); return; }
+
+    messages.push({ role: 'assistant', content: turn.content });
+    const toolResults = [];
+    for (const b of turn.content) {
+      if (b.type !== 'tool_use') continue;
+      broadcast({ type: 'TRIAGE_TOOL', name: b.name, input: b.input });
+      const out = executeGetResults(b.input, all);
+      broadcast({ type: 'TRIAGE_TOOL_RESULT', name: b.name, count: out.returned, total: out.total });
+      toolResults.push({ type: 'tool_result', tool_use_id: b.id, content: JSON.stringify(out) });
+    }
+    messages.push({ role: 'user', content: toolResults });
+  }
+  broadcast({ type: 'TRIAGE_DONE', usage, note: 'stopped at iteration cap' });
+}
+
+// Accumulate one streamed Anthropic message into content blocks, broadcasting
+// text/thinking deltas as they arrive. Returns { content, stopReason, usage }.
+async function parseAnthropicStream(stream) {
+  const blocks = [];
+  let stopReason = null;
+  let usage = null;
+  let streamError = null;
+
+  await readSSE(stream, (evt) => {
+    if (!evt) return;
+    switch (evt.type) {
+      case 'content_block_start': {
+        const cb = evt.content_block || {};
+        if (cb.type === 'tool_use') blocks[evt.index] = { type: 'tool_use', id: cb.id, name: cb.name, _json: '' };
+        else if (cb.type === 'thinking') blocks[evt.index] = { type: 'thinking', thinking: '', signature: '' };
+        else if (cb.type === 'redacted_thinking') blocks[evt.index] = { type: 'redacted_thinking', data: cb.data || '' };
+        else blocks[evt.index] = { type: 'text', text: '' };
+        break;
+      }
+      case 'content_block_delta': {
+        const b = blocks[evt.index];
+        if (!b) break;
+        const d = evt.delta || {};
+        if (d.type === 'text_delta') { b.text += d.text; broadcast({ type: 'TRIAGE_DELTA', text: d.text }); }
+        else if (d.type === 'thinking_delta') { b.thinking += d.thinking; broadcast({ type: 'TRIAGE_THINKING', text: d.thinking }); }
+        else if (d.type === 'signature_delta') { b.signature += d.signature; }
+        else if (d.type === 'input_json_delta') { b._json += d.partial_json; }
+        break;
+      }
+      case 'content_block_stop': {
+        const b = blocks[evt.index];
+        if (b && b.type === 'tool_use') {
+          try { b.input = JSON.parse(b._json || '{}'); } catch (_) { b.input = {}; }
+          delete b._json;
+        }
+        break;
+      }
+      case 'message_delta':
+        if (evt.delta && evt.delta.stop_reason) stopReason = evt.delta.stop_reason;
+        if (evt.usage) usage = evt.usage;
+        break;
+      case 'error':
+        streamError = (evt.error && evt.error.message) || 'stream error';
+        break;
+    }
+  });
+
+  if (streamError) throw new Error(streamError);
+
+  const content = blocks.filter(Boolean).map((b) => {
+    if (b.type === 'tool_use') return { type: 'tool_use', id: b.id, name: b.name, input: b.input || {} };
+    if (b.type === 'thinking') return { type: 'thinking', thinking: b.thinking, signature: b.signature };
+    if (b.type === 'redacted_thinking') return { type: 'redacted_thinking', data: b.data };
+    return { type: 'text', text: b.text };
+  });
+  return { content, stopReason, usage };
+}
+
+// --- OpenAI-compatible agent loop (OpenAI, OpenRouter, local servers) ---
+
+async function runOpenAIAgent(settings, initialPayload, all) {
+  const base = (settings.llmBaseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
+  const url = `${base}/chat/completions`;
+  const headers = {
+    'content-type': 'application/json',
+    'authorization': `Bearer ${settings.llmApiKey}`,
+    // OpenRouter rankings (ignored by other servers).
+    'HTTP-Referer': 'https://github.com/tavgar/DorkWay',
+    'X-Title': 'DorkWay'
+  };
+  const messages = [
+    { role: 'system', content: TRIAGE_SYSTEM },
+    { role: 'user', content: initialPayload }
+  ];
+  let usage = null;
+
+  for (let i = 0; i < TRIAGE_MAX_ITERS; i++) {
+    const body = {
+      model: settings.llmModel || 'gpt-4o',
+      max_tokens: settings.llmMaxTokens || 16000,
+      stream: true,
+      tools: [{ type: 'function', function: { name: 'get_results', description: GET_RESULTS_DESC, parameters: GET_RESULTS_SCHEMA } }],
+      tool_choice: 'auto',
+      messages
+    };
+    // OpenRouter-style reasoning; servers that don't support it ignore or 400 —
+    // the user can disable thinking in LLM Settings for those.
+    if (settings.llmThinking) body.reasoning = { effort: 'medium' };
+
+    const resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: triageController.signal });
+    if (!resp.ok || !resp.body) {
+      const text = await resp.text().catch(() => '');
+      broadcast({ type: 'TRIAGE_ERROR', error: `HTTP ${resp.status} ${resp.statusText}${text ? ' — ' + text.slice(0, 300) : ''}` });
+      return;
+    }
+
+    const turn = await parseOpenAIStream(resp.body);
+    usage = turn.usage || usage;
+    if (turn.finishReason !== 'tool_calls' || !turn.toolCalls.length) { broadcast({ type: 'TRIAGE_DONE', usage }); return; }
+
+    messages.push({
+      role: 'assistant',
+      content: turn.content || null,
+      tool_calls: turn.toolCalls.map((tc) => ({ id: tc.id, type: 'function', function: { name: tc.name, arguments: tc.args } }))
+    });
+    for (const tc of turn.toolCalls) {
+      let input;
+      try { input = JSON.parse(tc.args || '{}'); } catch (_) { input = {}; }
+      broadcast({ type: 'TRIAGE_TOOL', name: tc.name, input });
+      const out = executeGetResults(input, all);
+      broadcast({ type: 'TRIAGE_TOOL_RESULT', name: tc.name, count: out.returned, total: out.total });
+      messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(out) });
+    }
+  }
+  broadcast({ type: 'TRIAGE_DONE', usage, note: 'stopped at iteration cap' });
+}
+
+// Accumulate one streamed OpenAI/OpenRouter completion, broadcasting content and
+// reasoning deltas. Returns { content, toolCalls, finishReason, usage }.
+async function parseOpenAIStream(stream) {
+  let content = '';
+  const toolCalls = [];
+  let finishReason = null;
+  let usage = null;
+
+  await readSSE(stream, (evt) => {
+    if (!evt) return;
+    if (evt.usage) usage = evt.usage;
+    const choice = evt.choices && evt.choices[0];
+    if (!choice) return;
+    const d = choice.delta || {};
+    if (d.content) { content += d.content; broadcast({ type: 'TRIAGE_DELTA', text: d.content }); }
+    if (d.reasoning) broadcast({ type: 'TRIAGE_THINKING', text: d.reasoning });
+    if (Array.isArray(d.tool_calls)) {
+      for (const tc of d.tool_calls) {
+        const idx = tc.index ?? 0;
+        if (!toolCalls[idx]) toolCalls[idx] = { id: '', name: '', args: '' };
+        if (tc.id) toolCalls[idx].id = tc.id;
+        if (tc.function && tc.function.name) toolCalls[idx].name += tc.function.name;
+        if (tc.function && tc.function.arguments) toolCalls[idx].args += tc.function.arguments;
+      }
+    }
+    if (choice.finish_reason) finishReason = choice.finish_reason;
+  });
+
+  return { content, toolCalls: toolCalls.filter(Boolean), finishReason, usage };
 }
