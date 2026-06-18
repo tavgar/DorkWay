@@ -392,8 +392,8 @@ async function onSuggestSplits(msg) {
     const exclusions = [...excludeSubs].map((s) => `-site:${s}.${root}`);
     suggestions.push({
       kind: 'exclude-known',
-      label: `site:${root} ${[...excludeSubs].map((s) => '-' + s).join(' ')}`,
-      query: `site:${root} ${exclusions.join(' ')} ${stripped}`.trim()
+      label: `site:*.${root} ${[...excludeSubs].map((s) => '-' + s).join(' ')}`,
+      query: `site:*.${root} ${exclusions.join(' ')} ${stripped}`.trim()
     });
 
     // Dork pattern catalog — scope each attack-surface probe to *.root so it
