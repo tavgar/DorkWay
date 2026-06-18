@@ -964,12 +964,13 @@ function addTriageNote(text) {
   out.scrollTop = out.scrollHeight;
 }
 
-// Compact one-line rendering of a tool call's arguments.
+// Compact one-line rendering of a tool call's arguments. Arrays show their length
+// (the key — urls / queries — conveys what they are).
 function triageToolArgs(input) {
   if (!input || typeof input !== 'object') return '';
   return Object.entries(input)
     .filter(([, v]) => v !== '' && v != null)
-    .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.length + ' urls' : v}`)
+    .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.length : v}`)
     .join(', ');
 }
 
@@ -977,6 +978,11 @@ function triageToolArgs(input) {
 function triageToolResultNote(m) {
   if (m.name === 'get_stats') {
     return `↳ ${m.count} group${m.count === 1 ? '' : 's'} across ${m.total} result${m.total === 1 ? '' : 's'}`;
+  }
+  if (m.name === 'run_dork') {
+    if (m.error) return `↳ run_dork: ${m.error}`;
+    const r = m.reason && m.reason !== 'completed' ? ` (${m.reason})` : '';
+    return `↳ ran ${m.count} dork${m.count === 1 ? '' : 's'} · +${m.added} captured (${m.total} total)${r}`;
   }
   if (m.name === 'check_status') {
     return `↳ probed ${m.count} · ${m.live || 0} live`;
@@ -1061,6 +1067,9 @@ function wireRuntimeEvents() {
         break;
       case 'TRIAGE_TOOL_RESULT':
         addTriageNote(triageToolResultNote(m));
+        break;
+      case 'TRIAGE_NOTE':
+        addTriageNote(m.text);
         break;
       case 'TRIAGE_DONE': {
         setTriageRunning(false);

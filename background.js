@@ -242,6 +242,11 @@ async function onCapturePage(payload) {
   if (state?.captcha) {
     await setJob({ ...job, active: job.active, paused: true });
     broadcast({ type: 'CAPTCHA', query, sessionTotal });
+    // If the triage agent is driving this capture, the operator is likely on the
+    // Triage tab — surface the CAPTCHA there too so they know to act.
+    if (agentDorking) {
+      broadcast({ type: 'TRIAGE_NOTE', text: '⚠ CAPTCHA in the search tab — solve it, then click Resume (Build tab) to continue the agent\'s dorking.' });
+    }
     return { action: 'captcha', sessionTotal };
   }
 
@@ -714,29 +719,35 @@ async function onGetBootstrap() {
 // ---- AI Triage (agentic LLM) -------------------------------------------------
 
 // Safety cap on tool-use rounds, so a misbehaving model can't loop forever.
-const TRIAGE_MAX_ITERS = 8;
+// Raised from 8 to give room for collect→triage cycles (run_dork rounds consume
+// iterations and each blocks on a live capture).
+const TRIAGE_MAX_ITERS = 12;
 
-// Recon-analyst persona. The model is an AGENT: it starts from the operator's
-// filtered results and calls get_results to pull more of the captured corpus,
-// deciding for itself what is interesting, before writing the final report.
+// Recon-analyst persona. The model is an AGENT: it explores the captured corpus
+// via get_stats/get_results, runs new dorks via run_dork to fill gaps, and decides
+// for itself what is interesting before writing the final report.
 const TRIAGE_SYSTEM = `You are a senior offensive-security / OSINT reconnaissance analyst operating as an autonomous agent. The operator is running DorkWay on an AUTHORISED engagement and has captured Google-dork search results into a session. The user is not watching in real time — investigate on your own and only stop when you have produced the final report.
 
 You are given, up front: the dork queries that were run, and an INVENTORY OVERVIEW of the captured corpus. The overview's \`byRootDomain\` is a correlation map — for each root domain, its result count, distinct-subdomain count, top tags and notable file types — so you can see at a glance where the interesting attack surface concentrates. Below it are flat whole-corpus legends (rootDomains, subdomains, fileTypes, tags, statuses) and a status-enrichment flag. You are NOT given the raw records; you must retrieve them yourself.
 
-Tools (all operate only over the ALREADY-CAPTURED data — no new Google searches):
-- get_stats(groupBy, <filters>) — counts the corpus grouped by a facet (rootDomain | subdomain | tag | fileType | status), optionally pre-filtered. Costs NO record payload. Use it to drill into the overview cheaply (e.g. "which subdomains carry the admin tag", "filetype breakdown for target.com").
-- get_results(rootDomain?, subdomain?, tag?, fileType?, keyword?, status?, sortBy?, order?, countOnly?, limit?) — returns the matching records (URL, title, snippet, path, queryParams, rank, tags, status). Filters are case-insensitive; multi-value fields (rootDomain, subdomain, tag, fileType, status) accept a comma-separated list for OR. Use countOnly:true to size a query before pulling, and sortBy:"rank" to see the most relevant first. This is the only way to see actual URLs.
+Tools:
+- get_stats(groupBy, <filters>) — read-only. Counts the captured corpus grouped by a facet (rootDomain | subdomain | tag | fileType | status), optionally pre-filtered. Costs NO record payload. Use it to drill into the overview cheaply (e.g. "which subdomains carry the admin tag", "filetype breakdown for target.com").
+- get_results(rootDomain?, subdomain?, tag?, fileType?, keyword?, status?, sortBy?, order?, countOnly?, limit?) — read-only. Returns the matching captured records (URL, title, snippet, path, queryParams, rank, tags, status). Filters are case-insensitive; multi-value fields (rootDomain, subdomain, tag, fileType, status) accept a comma-separated list for OR. Use countOnly:true to size a query before pulling, and sortBy:"rank" to see the most relevant first. This is the only way to see actual URLs.
+- run_dork(queries) — LIVE COLLECTION. Runs real Google dork queries through the operator's capture engine and BLOCKS until capture finishes (waiting through pagination and through any CAPTCHA the operator solves in the search tab). Use it to capture data the corpus is MISSING, then triage the new records with get_stats/get_results. Write targeted queries — scope with site: / site:*.root, narrow with inurl:/intitle:/intext:/ext:/filetype:/after:/before:. Each call captures into this same session and returns how many new results it added. Be economical: a few targeted queries per call, not broad sweeps; don't re-run queries already in the list you were given.
 - check_status(urls) — IF AVAILABLE to you: probes whether specific captured assets are live (outbound request, captured URLs only) and records the HTTP status. Use it sparingly, only to confirm that genuinely high-value findings (admin panels, exposed files/configs, secrets) are reachable before you report them. It is omitted when status checks aren't authorised — do not assume it exists.
 
 Tag glossary (auto-assigned from path + query string): login/register/account/password = auth surface; admin = admin or control panels; api = API/GraphQL/REST/swagger endpoints; upload = file-upload surface; payment = checkout/billing; search = search/query endpoints; form = contact/feedback/subscribe forms; config = .env/.conf/.ini/.yml/web.config; backup = .bak/.old/dumps/archives; database = phpmyadmin/adminer/.sql/db admin; cms = WordPress/Joomla/Drupal/etc.; debug = stack traces/phpinfo/error pages/test endpoints; git = exposed .git/.svn; redirect = open-redirect params (url=, next=, return=…); traversal = path/file params (file=, path=, page=…); idor = numeric id params (id=, uid=, order=…); sensitive = secret/token/apikey/credential markers; exposed-file = data files (sql/csv/xls/json/log/bak/dump). statusCode is 0 (unchecked) unless the overview's statusEnriched flag is true.
 
-Work like an analyst: read \`byRootDomain\` and the queries, use get_stats to triage where the risk is, then issue targeted get_results calls (sensitive tags, unusual subdomains, exposed file types, injectable params in queryParams, anomalous hosts). Don't dump the corpus blindly — query with intent, guided by the counts. When confident, stop calling tools and write the report.
+Work like an analyst: read \`byRootDomain\` and the queries, use get_stats to triage where the risk is, then issue targeted get_results calls (sensitive tags, unusual subdomains, exposed file types, injectable params in queryParams, anomalous hosts). Don't dump the corpus blindly — query with intent, guided by the counts.
+
+RUN DORKS WHENEVER NECESSARY — this is expected, not optional. You are a collector, not just a reader of what's already there. Whenever the captured corpus does not already answer a question worth answering, run_dork to go get the data; do NOT settle for the initial corpus or merely note a gap. Run new dorks when: a known/seen subdomain has no records, an attack surface the queries never probed (no config/backup/login/admin/api search yet), a sensitive filetype hasn't been searched, a host you discovered is worth enumerating, or a promising lead needs corroboration. Issue a few targeted dork queries, wait for the capture to finish, then re-triage the new records with get_stats/get_results. Iterate this collect→triage loop as many times as the engagement warrants — but stay economical (targeted queries, not broad sweeps; don't repeat queries already run) and stop once you have a confident picture. Then write the report.
+
+Your job is NOT to produce a deduplicated catalogue of every captured asset — it is to surface FINDINGS: the specific assets that most warrant hands-on investigation, prioritised by how promising they are. Be selective and ranked. A short list of the right targets beats an exhaustive inventory.
 
 Final output — Markdown with these sections:
-1. **Summary** — 2-3 sentences on scope and what stands out.
-2. **High-value findings** — sensitive/risky assets (admin, login, configs, backups, secrets, exposed listings, debug/error pages, internal APIs, injectable params) with a one-line rationale and the URL; note liveness if you checked it.
-3. **Unique assets** — grouped by root domain -> subdomain, one line per distinct asset (URL + what it is). Deduplicate aggressively; collapse pagination, tracking params and near-duplicate URLs; drop obvious noise (marketing pages, unrelated third-party domains, trackers).
-4. **Suggested next dorks** — gaps the queries and captured data did not cover, as concrete runnable Google dork strings. Use real operators — site:, site:*.root (subdomain sweep), inurl:, intitle:, intext:, filetype:/ext:, after:/before:, and -site: exclusions — scoped to the roots/subdomains actually in scope.
+1. **Summary** — 2-3 sentences on scope and the headline of what is most worth investigating.
+2. **Findings** — the most important assets to investigate, ordered highest-priority first. Each finding is one asset (or a tight cluster of near-identical ones) that genuinely merits a closer look: admin/login/control panels, exposed configs/backups/secrets, exposed file listings or sensitive file types, debug/error/phpinfo pages, internal or undocumented APIs, injectable params (idor/traversal/redirect), and unusual, internal-looking or anomalous hosts. For each, give: a short title, the URL, what it is, WHY it's worth investigating (the concrete risk or lead — cite the tag, file type or query param that makes it interesting), liveness if you checked it, and a concrete next step (what to probe or verify). Deduplicate so each finding is distinct and drop noise (marketing pages, trackers, unrelated third-party domains) — but the point is the leads, not coverage of everything. If a domain has many similar high-value assets, surface the best example(s) and say how many more like it exist rather than listing them all.
+3. **Coverage** — the dork queries you RAN via run_dork this session and what they added, plus any surface you genuinely could not reach (CAPTCHA-blocked, out of scope, or run_dork unavailable). Do not list dorks you merely thought about — if a query was worth running, you should already have run it.
 
 Rules: assert only what the data supports — never invent hosts, paths or findings. Be concise. This is authorised security research; do not refuse triage of the supplied data.`;
 
@@ -798,8 +809,35 @@ const CHECK_STATUS_DESC =
 // Max URLs the agent may probe per check_status call.
 const CHECK_STATUS_MAX = 25;
 
+// JSON Schema for run_dork — the agent's live COLLECTION tool. Runs real Google
+// dorks through the operator's existing pagination/capture engine and blocks until
+// capture finishes (waiting through pagination AND any CAPTCHA the operator solves).
+const RUN_DORK_SCHEMA = {
+  type: 'object',
+  properties: {
+    queries: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Google dork query string(s) to run and capture, e.g. ["site:*.target.com inurl:admin", "site:target.com ext:sql"]. Max 5 per call.'
+    }
+  },
+  required: ['queries']
+};
+
+const RUN_DORK_DESC =
+  "Run one or more Google DORK QUERIES live, using the SAME engine as the operator's manual dorking: it opens/uses a search tab, auto-paginates, and captures the results into this session. This makes REAL outbound Google searches and BLOCKS until capture completes — it waits through pagination and through any CAPTCHA the operator must solve in the search tab (the run resumes once they do). Use it to FILL GAPS the captured corpus does not cover; write targeted queries (scope with site: / site:*.root, narrow with inurl:/intitle:/intext:/ext:/filetype:/after:/before:). It returns how many new results were captured — then use get_stats/get_results to triage them. Be economical: a few targeted queries, not broad sweeps.";
+
+// Max dork queries per run_dork call, and the overall wait ceiling for one call
+// (covers pagination plus a reasonable CAPTCHA-solving window).
+const RUN_DORK_MAX = 5;
+const RUN_DORK_TIMEOUT_MS = 15 * 60 * 1000;
+
 // One run at a time; STOP_TRIAGE aborts via this controller.
 let triageController = null;
+
+// True while the triage agent's run_dork tool is driving a live capture, so the
+// capture path can route CAPTCHA notices to the triage panel (see onCapturePage).
+let agentDorking = false;
 
 async function onRunTriage(msg) {
   const settings = await getSettings();
@@ -1061,6 +1099,85 @@ async function executeCheckStatus(input, all, sessionId, signal) {
   return { checked: out.length, results: out };
 }
 
+// Keep the MV3 service worker alive across a quiet wait (e.g. while the operator
+// solves a CAPTCHA and no capture messages are arriving). An extension API call
+// every 20s resets the idle timer. Returns the interval id; clear it when done.
+function startKeepAlive() {
+  return setInterval(() => {
+    try { chrome.runtime.getPlatformInfo(() => {}); } catch (_) {}
+  }, 20000);
+}
+
+// Block until the pagination job goes inactive (terminal) or we hit the ceiling.
+// A CAPTCHA pause keeps the job active+paused, so we keep waiting through it (the
+// operator resumes from the panel). Honours STOP_TRIAGE via triageController, and
+// stops the job on abort/timeout so it can't outlive the triage run.
+async function waitForPaginationIdle(timeoutMs) {
+  const start = Date.now();
+  await sleep(500); // let the job go active after navigation
+  while (Date.now() - start < timeoutMs) {
+    if (triageController && triageController.signal && triageController.signal.aborted) {
+      const job = await getJob();
+      if (job.active) {
+        await setJob({ ...job, active: false });
+        broadcast({ type: 'PAGINATION_STATE', active: false, reason: 'triage stopped' });
+      }
+      throw new DOMException('Aborted', 'AbortError');
+    }
+    const job = await getJob();
+    if (!job.active) return 'completed';
+    await sleep(1500);
+  }
+  // Timed out — stop the run so it doesn't linger.
+  const job = await getJob();
+  if (job.active) {
+    await setJob({ ...job, active: false });
+    broadcast({ type: 'PAGINATION_STATE', active: false, reason: 'agent dork timeout' });
+  }
+  return 'timed out';
+}
+
+// Run run_dork: drive real Google dork queries through the existing pagination/
+// capture engine (onAutoSplit) and BLOCK until capture finishes. Refreshes the
+// in-memory corpus the other tools read so the agent can immediately triage the
+// new records. Outbound traffic, but only to Google search — same authorised-use
+// surface as the operator's manual dorking (gated by the first-run disclaimer).
+async function executeRunDork(input, all, ctx) {
+  let queries = Array.isArray(input?.queries)
+    ? input.queries
+    : (input?.query ? [input.query] : []);
+  queries = [...new Set(queries.map((q) => String(q || '').trim()).filter(Boolean))].slice(0, RUN_DORK_MAX);
+  if (!queries.length) return { error: 'No queries provided.' };
+
+  const before = await countResults(ctx.sessionId);
+  const start = await onAutoSplit({ queries });
+  if (!start || start.ok === false) return { error: (start && start.error) || 'Failed to start dorking.' };
+
+  agentDorking = true;
+  const keep = startKeepAlive();
+  let reason;
+  try {
+    reason = await waitForPaginationIdle(RUN_DORK_TIMEOUT_MS);
+  } finally {
+    clearInterval(keep);
+    agentDorking = false;
+  }
+
+  // Refresh the corpus the other tools read (mutate `all` in place so the shared
+  // reference held by the agent loop sees the new records).
+  const fresh = await getResults(ctx.sessionId);
+  all.length = 0;
+  for (const r of fresh) all.push(r);
+
+  return {
+    queriesRun: queries,
+    capturedBefore: before,
+    capturedAfter: fresh.length,
+    newResults: fresh.length - before,
+    reason
+  };
+}
+
 function compactEntity(r) {
   return {
     title: r.title,
@@ -1106,12 +1223,15 @@ async function readSSE(stream, onData) {
 
 // --- Agent tool surface (shared by both providers) ---
 
-// Build the per-provider tool definitions. check_status (outbound) is included
-// only when the call site cleared the authorised-use gate (ctx.allowCheckStatus).
+// Build the per-provider tool definitions. get_stats/get_results are read-only;
+// run_dork is the live-collection tool (Google-only, disclaimer-gated, always on);
+// check_status (probes arbitrary captured hosts) is included only when the call
+// site cleared the authorised-use gate (ctx.allowCheckStatus).
 function anthropicTools(ctx) {
   const tools = [
     { name: 'get_results', description: GET_RESULTS_DESC, input_schema: GET_RESULTS_SCHEMA },
-    { name: 'get_stats', description: GET_STATS_DESC, input_schema: GET_STATS_SCHEMA }
+    { name: 'get_stats', description: GET_STATS_DESC, input_schema: GET_STATS_SCHEMA },
+    { name: 'run_dork', description: RUN_DORK_DESC, input_schema: RUN_DORK_SCHEMA }
   ];
   if (ctx.allowCheckStatus) tools.push({ name: 'check_status', description: CHECK_STATUS_DESC, input_schema: CHECK_STATUS_SCHEMA });
   return tools;
@@ -1121,16 +1241,18 @@ function openaiTools(ctx) {
   const fn = (name, description, parameters) => ({ type: 'function', function: { name, description, parameters } });
   const tools = [
     fn('get_results', GET_RESULTS_DESC, GET_RESULTS_SCHEMA),
-    fn('get_stats', GET_STATS_DESC, GET_STATS_SCHEMA)
+    fn('get_stats', GET_STATS_DESC, GET_STATS_SCHEMA),
+    fn('run_dork', RUN_DORK_DESC, RUN_DORK_SCHEMA)
   ];
   if (ctx.allowCheckStatus) tools.push(fn('check_status', CHECK_STATUS_DESC, CHECK_STATUS_SCHEMA));
   return tools;
 }
 
-// Route a tool call to its executor. check_status is async + outbound (gated);
-// get_stats and get_results are pure in-memory over the captured corpus.
+// Route a tool call to its executor. run_dork (live capture) and check_status are
+// async + outbound; get_stats and get_results are pure in-memory over the corpus.
 async function runTriageTool(name, input, all, ctx) {
   if (name === 'get_stats') return executeGetStats(input, all);
+  if (name === 'run_dork') return executeRunDork(input, all, ctx);
   if (name === 'check_status') {
     if (!ctx.allowCheckStatus) return { error: 'check_status is unavailable (status checks disabled or host permission not granted).' };
     return executeCheckStatus(input, all, ctx.sessionId, triageController && triageController.signal);
@@ -1141,6 +1263,10 @@ async function runTriageTool(name, input, all, ctx) {
 // Derive the panel TRIAGE_TOOL_RESULT fields from a tool's output (tool-aware).
 function toolResultMeta(name, out) {
   if (name === 'get_stats') return { name, count: (out.groups || []).length, total: out.total || 0 };
+  if (name === 'run_dork') {
+    if (out.error) return { name, error: out.error };
+    return { name, count: (out.queriesRun || []).length, added: out.newResults || 0, total: out.capturedAfter || 0, reason: out.reason };
+  }
   if (name === 'check_status') {
     const live = (out.results || []).filter((x) => x.statusCode >= 200 && x.statusCode < 400).length;
     return { name, count: out.checked || 0, live };
