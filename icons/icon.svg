@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="tile" x1="14" y1="8" x2="116" y2="122" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1d2742"/>
+      <stop offset="1" stop-color="#0a0e16"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="28" y1="22" x2="104" y2="104" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9ca2ff"/>
+      <stop offset="1" stop-color="#5358e8"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="4" x2="0" y2="78" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".10"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="2.4" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- recon tile -->
+  <rect x="4" y="4" width="120" height="120" rx="30" fill="url(#tile)"/>
+  <rect x="4" y="4" width="120" height="120" rx="30" fill="url(#sheen)"/>
+  <rect x="4.75" y="4.75" width="118.5" height="118.5" rx="29.25" fill="none" stroke="#ffffff" stroke-opacity=".10" stroke-width="1.5"/>
+
+  <!-- scope / magnifier mark -->
+  <g fill="none" stroke="url(#mark)" stroke-linecap="round" filter="url(#glow)">
+    <circle cx="54" cy="54" r="30" stroke-width="9"/>
+    <path d="M54 24V84 M24 54H84" stroke-width="5" opacity=".5"/>
+    <path d="M75.2 75.2 102 102" stroke-width="12"/>
+  </g>
+</svg>

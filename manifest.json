@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DorkWay",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "OSINT/recon assistant for authorised Google dorking — captures, organises, tags, filters and exports SERP results.",
   "minimum_chrome_version": "114",
   "permissions": [
