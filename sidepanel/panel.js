@@ -37,6 +37,7 @@ async function init() {
   wireBuilder();
   wireExport();
   wireSettings();
+  wireTriage();
   wireRuntimeEvents();
 
   if (boot.job && boot.job.active) setStatusLine(`Auto-pagination active for: ${boot.job.query}`);
@@ -104,6 +105,7 @@ async function loadResults() {
   const r = await msg({ type: 'GET_RESULTS', sessionId: state.activeSessionId });
   state.results = (r.results || []).sort((a, b) => (a.rank || 0) - (b.rank || 0));
   $('count-badge').textContent = state.results.length;
+  updateTriageMeta();
   buildFacets();
   applyFilters();
 }
@@ -577,6 +579,136 @@ function clampInt(v, min, max, dflt) {
   return Math.min(max, Math.max(min, n));
 }
 
+// ---- AI Triage ---------------------------------------------------------------
+
+const BASEURL_HINTS = {
+  anthropic: 'Blank → https://api.anthropic.com. Model e.g. claude-opus-4-8.',
+  openai: 'Blank → https://api.openai.com/v1. OpenRouter: https://openrouter.ai/api/v1 (model e.g. anthropic/claude-opus-4-8).'
+};
+
+function applyLlmSettingsToForm() {
+  const s = state.settings;
+  $('llm-provider').value = s.llmProvider || 'anthropic';
+  $('llm-baseurl').value = s.llmBaseUrl || '';
+  $('llm-key').value = s.llmApiKey || '';
+  $('llm-model').value = s.llmModel || '';
+  $('llm-maxtokens').value = s.llmMaxTokens ?? 16000;
+  $('llm-baseurl-hint').textContent = BASEURL_HINTS[$('llm-provider').value] || '';
+}
+
+function updateTriageMeta() {
+  const s = state.settings;
+  const provider = s.llmProvider === 'openai' ? 'OpenAI-compatible' : 'Anthropic';
+  const model = s.llmModel || (s.llmProvider === 'openai' ? 'gpt-4o' : 'claude-opus-4-8');
+  const key = s.llmApiKey ? '' : ' · ⚠ no API key set';
+  $('triage-meta').textContent =
+    `${state.results.length} results · ${provider} (${model})${key}`;
+}
+
+function wireTriage() {
+  applyLlmSettingsToForm();
+  updateTriageMeta();
+
+  // Settings modal.
+  $('llm-settings-open').addEventListener('click', () => {
+    applyLlmSettingsToForm();
+    $('llm-settings').classList.remove('hidden');
+  });
+  $('llm-settings-close').addEventListener('click', () => $('llm-settings').classList.add('hidden'));
+  $('llm-provider').addEventListener('change', () => {
+    $('llm-baseurl-hint').textContent = BASEURL_HINTS[$('llm-provider').value] || '';
+  });
+  $('llm-settings-save').addEventListener('click', async () => {
+    const settings = {
+      llmProvider: $('llm-provider').value,
+      llmBaseUrl: $('llm-baseurl').value.trim(),
+      llmApiKey: $('llm-key').value.trim(),
+      llmModel: $('llm-model').value.trim(),
+      llmMaxTokens: clampInt($('llm-maxtokens').value, 256, 128000, 16000)
+    };
+    const r = await msg({ type: 'SAVE_SETTINGS', settings });
+    state.settings = { ...state.settings, ...r.settings };
+    updateTriageMeta();
+    $('llm-settings-saved').textContent = '✓ Saved';
+    setTimeout(() => ($('llm-settings-saved').textContent = ''), 2000);
+  });
+
+  // Run / stop / copy.
+  $('run-triage').addEventListener('click', runTriage);
+  $('stop-triage').addEventListener('click', () => msg({ type: 'STOP_TRIAGE' }));
+  $('copy-triage').addEventListener('click', () => {
+    navigator.clipboard.writeText($('triage-output').textContent || '').catch(() => {});
+  });
+}
+
+// Compact a result to the fields the model needs, tagged with whether it passes
+// the current filters so the model sees the operator's focus while still getting
+// every result. Snippet is truncated to keep the payload small.
+function triageEntity(r) {
+  return {
+    title: r.title,
+    url: r.url,
+    rootDomain: r.rootDomain,
+    subdomain: r.subdomain,
+    path: r.path,
+    fileType: r.fileType,
+    tags: r.tags,
+    sourceQuery: r.sourceQuery,
+    statusCode: r.statusCode,
+    snippet: (r.snippet || '').slice(0, 200),
+    filtered: passesFilters(r)
+  };
+}
+
+async function runTriage() {
+  if (!state.results.length) {
+    setTriageStatus('No results in this session — capture some first.', true);
+    return;
+  }
+  if (!state.settings.llmApiKey) {
+    setTriageStatus('No API key — open LLM Settings and add one.', true);
+    return;
+  }
+
+  // A custom base URL may point anywhere; request host access from this gesture.
+  const base = state.settings.llmBaseUrl;
+  if (base) {
+    let origin;
+    try { origin = new URL(base).origin + '/*'; } catch (_) { origin = null; }
+    if (origin) {
+      const has = await chrome.permissions.contains({ origins: [origin] }).catch(() => false);
+      if (!has) {
+        const granted = await chrome.permissions.request({ origins: [origin] }).catch(() => false);
+        if (!granted) { setTriageStatus('Host permission denied for the configured endpoint.', true); return; }
+      }
+    }
+  }
+
+  const entities = state.results.map(triageEntity);
+  $('triage-output').textContent = '';
+  $('triage-output').classList.remove('hidden');
+  setTriageRunning(true);
+  setTriageStatus(`Triaging ${entities.length} results…`);
+
+  const r = await msg({ type: 'RUN_TRIAGE', entities });
+  // The stream drives the UI via broadcasts; only surface a synchronous failure here.
+  if (r && r.ok === false && !$('triage-output').textContent) {
+    setTriageStatus(`⚠ ${r.error}`, true);
+    setTriageRunning(false);
+  }
+}
+
+function setTriageRunning(running) {
+  $('run-triage').disabled = running;
+  $('stop-triage').disabled = !running;
+}
+
+function setTriageStatus(text, warn = false) {
+  const el = $('triage-status');
+  el.textContent = text;
+  el.style.color = warn ? '#fca5a5' : '';
+}
+
 // ---- runtime events ----------------------------------------------------------
 
 function wireRuntimeEvents() {
@@ -607,6 +739,19 @@ function wireRuntimeEvents() {
         break;
       case 'STATUS_PROGRESS':
         $('status-progress').textContent = `Checking… ${m.checked}/${m.total}`;
+        break;
+      case 'TRIAGE_DELTA':
+        $('triage-output').textContent += m.text;
+        break;
+      case 'TRIAGE_DONE': {
+        setTriageRunning(false);
+        const tok = m.usage ? ` · ${m.usage.output_tokens ?? m.usage.completion_tokens ?? '?'} output tokens` : '';
+        setTriageStatus(m.aborted ? 'Stopped.' : `✓ Triage complete${tok}`);
+        break;
+      }
+      case 'TRIAGE_ERROR':
+        setTriageRunning(false);
+        setTriageStatus(`⚠ ${m.error}`, true);
         break;
     }
   });

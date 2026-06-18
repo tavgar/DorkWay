@@ -26,7 +26,13 @@ const DEFAULT_SETTINGS = {
   minDelayMs: 1500,
   maxDelayMs: 4000,
   disableFilter: true,
-  firstRunDone: false
+  firstRunDone: false,
+  // AI Triage / LLM. Blank baseUrl resolves to the provider default at request time.
+  llmProvider: 'anthropic',
+  llmBaseUrl: '',
+  llmApiKey: '',
+  llmModel: 'claude-opus-4-8',
+  llmMaxTokens: 16000
 };
 
 // ---- lifecycle ---------------------------------------------------------------
@@ -174,6 +180,12 @@ async function handle(msg, sender) {
       return onCheckStatus(msg);
     case 'PUSH_WEBHOOK':
       return onPushWebhook(msg);
+    case 'RUN_TRIAGE':
+      return onRunTriage(msg);
+    case 'STOP_TRIAGE': {
+      if (triageController) triageController.abort();
+      return { ok: true };
+    }
     default:
       return { ok: false, error: 'unknown message ' + msg.type };
   }
@@ -669,4 +681,172 @@ async function onGetBootstrap() {
     activeSessionId: await getActiveSessionId(),
     job: await getJob()
   };
+}
+
+// ---- AI Triage (LLM) ---------------------------------------------------------
+
+// Recon-analyst persona. The operator runs DorkWay on an authorised engagement;
+// the model turns a noisy SERP dump into a deduplicated inventory of unique assets.
+const TRIAGE_SYSTEM = `You are a senior offensive-security / OSINT reconnaissance analyst. The operator is running DorkWay on an AUTHORISED engagement and has captured Google-dork search results. You will receive JSON with: the dork queries that were run, and the captured results (each result may carry a "filtered" flag indicating whether it is in the operator's current filtered view, and a "sourceQuery" showing which dork found it).
+
+Your job is to turn this noisy SERP dump into a concise, deduplicated inventory of UNIQUE ASSETS — the distinct things worth a human's attention:
+- unique hosts and subdomains,
+- distinct endpoints / paths / APIs (collapse pagination, tracking params and near-duplicate URLs into one asset),
+- exposed files, directory listings, backups, configs, logs,
+- login / admin / auth panels and dashboards,
+- notable technologies, CMS, frameworks revealed by the results.
+
+Use the dork queries to understand what was hunted and to judge what is interesting. Treat the "filtered" results as the operator's current focus, but still consider every result when deduplicating. Aggressively merge duplicates and drop obvious noise (marketing pages, unrelated third-party domains, trackers).
+
+Output Markdown with these sections:
+1. **Summary** — 2-3 sentences on scope and what stands out.
+2. **High-value findings** — sensitive/risky assets (admin, login, configs, backups, secrets, exposed listings, debug/error pages, internal APIs) with a one-line rationale and the URL.
+3. **Unique assets** — grouped by root domain → subdomain, one line per distinct asset (URL + what it is). Deduplicated.
+4. **Suggested next dorks** — gaps the queries did not cover, as concrete dork strings.
+
+Rules: assert only what the data supports — never invent hosts, paths or findings. Be concise. This is authorised security research; do not refuse triage of the supplied data.`;
+
+// One run at a time; STOP_TRIAGE aborts via this controller.
+let triageController = null;
+
+async function onRunTriage(msg) {
+  const settings = await getSettings();
+  if (!settings.llmApiKey) {
+    return { ok: false, error: 'No API key — open LLM Settings and add one.' };
+  }
+
+  const entities = Array.isArray(msg.entities) ? msg.entities : [];
+  if (!entities.length) return { ok: false, error: 'No results to triage in this session.' };
+
+  const sessionId = await getActiveSessionId();
+  const session = await getSession(sessionId);
+
+  // Queries the model gets to reason about: the session's recorded dork queries,
+  // unioned with the distinct sourceQuery seen across the captured results.
+  const queries = new Set((session?.queries || []).filter(Boolean));
+  for (const e of entities) {
+    for (const q of String(e.sourceQuery || '').split('\n')) {
+      if (q.trim()) queries.add(q.trim());
+    }
+  }
+
+  const payload = JSON.stringify({
+    session: { name: session?.name || '' },
+    queries: [...queries],
+    filterActive: entities.some((e) => e.filtered === false),
+    results: entities
+  });
+
+  const { url, headers, body } = settings.llmProvider === 'openai'
+    ? buildOpenAIRequest(settings, payload)
+    : buildAnthropicRequest(settings, payload);
+
+  triageController = new AbortController();
+  try {
+    const resp = await fetch(url, { method: 'POST', headers, body, signal: triageController.signal });
+    if (!resp.ok || !resp.body) {
+      const text = await resp.text().catch(() => '');
+      broadcast({ type: 'TRIAGE_ERROR', error: `HTTP ${resp.status} ${resp.statusText}${text ? ' — ' + text.slice(0, 300) : ''}` });
+      return { ok: false, error: `HTTP ${resp.status}` };
+    }
+    await streamTriage(resp.body, settings.llmProvider);
+    return { ok: true };
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      broadcast({ type: 'TRIAGE_DONE', aborted: true });
+    } else {
+      broadcast({ type: 'TRIAGE_ERROR', error: String((err && err.message) || err) });
+    }
+    return { ok: false, error: String((err && err.message) || err) };
+  } finally {
+    triageController = null;
+  }
+}
+
+function buildAnthropicRequest(settings, payload) {
+  const base = (settings.llmBaseUrl || 'https://api.anthropic.com').replace(/\/+$/, '');
+  return {
+    url: `${base}/v1/messages`,
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': settings.llmApiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true'
+    },
+    body: JSON.stringify({
+      model: settings.llmModel || 'claude-opus-4-8',
+      max_tokens: settings.llmMaxTokens || 16000,
+      stream: true,
+      thinking: { type: 'adaptive' },
+      output_config: { effort: 'medium' },
+      system: TRIAGE_SYSTEM,
+      messages: [{ role: 'user', content: payload }]
+    })
+  };
+}
+
+function buildOpenAIRequest(settings, payload) {
+  const base = (settings.llmBaseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
+  return {
+    url: `${base}/chat/completions`,
+    headers: {
+      'content-type': 'application/json',
+      'authorization': `Bearer ${settings.llmApiKey}`,
+      // OpenRouter rankings (ignored by other servers).
+      'HTTP-Referer': 'https://github.com/tavgar/DorkWay',
+      'X-Title': 'DorkWay'
+    },
+    body: JSON.stringify({
+      model: settings.llmModel || 'gpt-4o',
+      max_tokens: settings.llmMaxTokens || 16000,
+      stream: true,
+      messages: [
+        { role: 'system', content: TRIAGE_SYSTEM },
+        { role: 'user', content: payload }
+      ]
+    })
+  };
+}
+
+// Read an SSE stream, extract text deltas per provider, and broadcast them to the
+// panel. Both providers emit `data: {json}` lines; OpenAI terminates with [DONE].
+async function streamTriage(stream, provider) {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let usage = null;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let nl;
+    while ((nl = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (data === '[DONE]') { broadcast({ type: 'TRIAGE_DONE', usage }); return; }
+
+      let evt;
+      try { evt = JSON.parse(data); } catch (_) { continue; }
+
+      if (provider === 'openai') {
+        const text = evt.choices?.[0]?.delta?.content;
+        if (text) broadcast({ type: 'TRIAGE_DELTA', text });
+        if (evt.usage) usage = evt.usage;
+      } else {
+        if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
+          broadcast({ type: 'TRIAGE_DELTA', text: evt.delta.text });
+        } else if (evt.type === 'message_delta' && evt.usage) {
+          usage = evt.usage;
+        } else if (evt.type === 'error') {
+          broadcast({ type: 'TRIAGE_ERROR', error: evt.error?.message || 'stream error' });
+          return;
+        }
+      }
+    }
+  }
+  broadcast({ type: 'TRIAGE_DONE', usage });
 }

@@ -143,6 +143,13 @@ button.small { padding: 3px 8px; font-size: 11px; }
   flex-shrink: 0; width: 72px; line-height: 1.2; word-break: break-word;
 }
 
+.triage-output {
+  white-space: pre-wrap; word-break: break-word;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px; margin-top: 8px; max-height: 60vh; overflow: auto;
+  font-size: 12px; line-height: 1.5;
+}
+
 .overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,.7); display: flex; align-items: center;
   justify-content: center; z-index: 50; padding: 16px;

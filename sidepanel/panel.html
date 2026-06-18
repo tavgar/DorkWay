@@ -24,6 +24,28 @@
       </div>
     </div>
 
+    <!-- LLM settings modal -->
+    <div id="llm-settings" class="overlay hidden">
+      <div class="overlay-card">
+        <h2>🤖 LLM Settings</h2>
+        <label>Provider
+          <select id="llm-provider">
+            <option value="anthropic">Anthropic (Claude)</option>
+            <option value="openai">OpenAI-compatible (OpenAI, OpenRouter, local…)</option>
+          </select>
+        </label>
+        <label>Base URL <input id="llm-baseurl" placeholder="leave blank for the provider default" /></label>
+        <p class="muted small" id="llm-baseurl-hint"></p>
+        <label>API key <input id="llm-key" type="password" placeholder="sk-…" /></label>
+        <label>Model <input id="llm-model" placeholder="claude-opus-4-8" /></label>
+        <label>Max output tokens <input id="llm-maxtokens" type="number" min="256" max="128000" /></label>
+        <p class="muted small">Stored locally in this browser profile, same as the webhook secret.</p>
+        <button id="llm-settings-save" class="primary">Save</button>
+        <button id="llm-settings-close" class="ghost" style="width:100%;margin-top:6px;">Close</button>
+        <div id="llm-settings-saved" class="muted small"></div>
+      </div>
+    </div>
+
     <header>
       <div class="brand"><span class="logo">🔎</span> DorkWay</div>
       <div class="session-bar">
@@ -35,6 +57,7 @@
     <nav class="tabs">
       <button data-tab="results" class="active">Results <span id="count-badge" class="badge">0</span></button>
       <button data-tab="build">Build</button>
+      <button data-tab="triage">AI Triage</button>
       <button data-tab="export">Export</button>
       <button data-tab="settings">Settings</button>
     </nav>
@@ -114,6 +137,27 @@
         <button id="auto-split" class="primary" title="Run every suggested split query back-to-back, fully paginating and capturing each one. Shares one tab; stops on CAPTCHA.">Auto split &amp; capture all</button>
       </div>
       <div id="splits" class="splits"></div>
+    </section>
+
+    <!-- AI TRIAGE -->
+    <section id="tab-triage" class="tab-panel">
+      <h3>AI Triage</h3>
+      <p class="muted small">
+        Feeds the captured results <b>and</b> the dork queries that produced them to an LLM,
+        which deduplicates the noise into an inventory of <b>unique assets</b> and highlights
+        high-value findings. <b>Authorised use only</b> — your results and queries are sent to
+        the configured provider.
+      </p>
+      <p class="muted small" id="triage-meta"></p>
+      <div class="row">
+        <button id="llm-settings-open" class="ghost">LLM Settings</button>
+        <button id="run-triage" class="primary">Run Triage</button>
+        <button id="stop-triage" class="ghost" disabled>Stop</button>
+        <span class="spacer"></span>
+        <button id="copy-triage" class="ghost small">Copy</button>
+      </div>
+      <div id="triage-status" class="muted small"></div>
+      <div id="triage-output" class="triage-output hidden"></div>
     </section>
 
     <!-- EXPORT -->
