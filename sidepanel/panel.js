@@ -847,9 +847,9 @@ function appendTriage(kind, text) {
 
 // Minimal, XSS-safe Markdown renderer for the agent's report. Builds DOM nodes
 // (createElement + textContent) — never innerHTML — so untrusted model output is
-// safe under MV3's strict CSP. Handles headings, ordered/unordered lists, bold,
-// italic, inline code, horizontal rules and http(s)/mailto links; anything else
-// renders as plain text.
+// safe under MV3's strict CSP. Handles headings, ordered/unordered lists, GFM
+// pipe tables, fenced code blocks, blockquotes, bold, italic, inline code,
+// horizontal rules and http(s)/mailto links; anything else renders as plain text.
 function renderMarkdown(md, container) {
   container.textContent = '';
   const lines = md.replace(/\r\n/g, '\n').split('\n');
@@ -860,6 +860,77 @@ function renderMarkdown(md, container) {
     const line = lines[i];
 
     if (!line.trim()) { list = null; i++; continue; }
+
+    // Fenced code block (``` or ~~~). Content is rendered verbatim (no inline
+    // parsing) and runs to the matching closing fence, or to EOF while streaming.
+    const fence = line.match(/^\s*(```+|~~~+)/);
+    if (fence) {
+      list = null;
+      const marker = fence[1][0] === '`' ? '```' : '~~~';
+      i++;
+      const code = [];
+      while (i < lines.length && !new RegExp('^\\s*' + marker).test(lines[i])) {
+        code.push(lines[i]); i++;
+      }
+      i++; // consume the closing fence (no-op past EOF)
+      const pre = document.createElement('pre');
+      const c = document.createElement('code');
+      c.textContent = code.join('\n');
+      pre.appendChild(c);
+      container.appendChild(pre);
+      continue;
+    }
+
+    // GFM pipe table: a header row followed by a `| --- | :--: |` divider row.
+    if (line.includes('|') && i + 1 < lines.length && isTableDivider(lines[i + 1])) {
+      list = null;
+      const header = splitTableRow(line);
+      const aligns = splitTableRow(lines[i + 1]).map(c => {
+        const l = c.startsWith(':'), r = c.endsWith(':');
+        return l && r ? 'center' : r ? 'right' : l ? 'left' : '';
+      });
+      i += 2;
+      const table = document.createElement('table');
+      const thead = document.createElement('thead');
+      const htr = document.createElement('tr');
+      header.forEach((cell, idx) => {
+        const th = document.createElement('th');
+        if (aligns[idx]) th.style.textAlign = aligns[idx];
+        renderInline(cell, th);
+        htr.appendChild(th);
+      });
+      thead.appendChild(htr);
+      table.appendChild(thead);
+      const tbody = document.createElement('tbody');
+      while (i < lines.length && lines[i].trim() && lines[i].includes('|')) {
+        const row = splitTableRow(lines[i]);
+        const tr = document.createElement('tr');
+        for (let c = 0; c < header.length; c++) {
+          const td = document.createElement('td');
+          if (aligns[c]) td.style.textAlign = aligns[c];
+          renderInline(row[c] || '', td);
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+        i++;
+      }
+      table.appendChild(tbody);
+      container.appendChild(table);
+      continue;
+    }
+
+    // Blockquote: gather consecutive `>` lines, strip the marker, render inline.
+    if (/^\s*>/.test(line)) {
+      list = null;
+      const buf = [];
+      while (i < lines.length && /^\s*>/.test(lines[i])) {
+        buf.push(lines[i].replace(/^\s*>\s?/, '')); i++;
+      }
+      const bq = document.createElement('blockquote');
+      renderInline(buf.join(' '), bq);
+      container.appendChild(bq);
+      continue;
+    }
 
     const h = line.match(/^(#{1,6})\s+(.*)$/);
     if (h) {
@@ -897,7 +968,10 @@ function renderMarkdown(md, container) {
     while (i < lines.length && lines[i].trim() &&
            !/^#{1,6}\s+/.test(lines[i]) &&
            !/^\s*[-*+]\s+/.test(lines[i]) &&
-           !/^\s*\d+[.)]\s+/.test(lines[i])) {
+           !/^\s*\d+[.)]\s+/.test(lines[i]) &&
+           !/^\s*(```+|~~~+)/.test(lines[i]) &&
+           !/^\s*>/.test(lines[i]) &&
+           !(lines[i].includes('|') && i + 1 < lines.length && isTableDivider(lines[i + 1]))) {
       buf.push(lines[i]);
       i++;
     }
@@ -905,6 +979,31 @@ function renderMarkdown(md, container) {
     renderInline(buf.join(' '), p);
     container.appendChild(p);
   }
+}
+
+// Split one GFM table row into trimmed cells. Strips the optional leading/trailing
+// pipe and honours `\|` as a literal pipe inside a cell.
+function splitTableRow(line) {
+  let s = line.trim();
+  if (s.startsWith('|')) s = s.slice(1);
+  if (s.endsWith('|')) s = s.slice(0, -1);
+  const cells = [];
+  let cur = '';
+  for (let j = 0; j < s.length; j++) {
+    if (s[j] === '\\' && s[j + 1] === '|') { cur += '|'; j++; continue; }
+    if (s[j] === '|') { cells.push(cur.trim()); cur = ''; continue; }
+    cur += s[j];
+  }
+  cells.push(cur.trim());
+  return cells;
+}
+
+// True when a line is a table divider, e.g. `| --- | :--: | ---: |` — every cell
+// is dashes with optional alignment colons.
+function isTableDivider(line) {
+  if (!/[-|]/.test(line) || !line.includes('-')) return false;
+  const cells = splitTableRow(line);
+  return cells.length > 0 && cells.every(c => /^:?-+:?$/.test(c));
 }
 
 // Inline Markdown: **bold**, *italic*, `code`, [text](url) and bare http(s) URLs.

@@ -93,9 +93,11 @@ framework, or dependency.
 - **Never `innerHTML` — build DOM with `createElement` + `textContent`.** Model
   output is untrusted and the extension runs under strict MV3 CSP. The answer is
   Markdown, rendered by the in-house `renderMarkdown`/`renderInline` (headings,
-  lists, bold/italic, code, `http(s)`/`mailto` links — other link schemes degrade
-  to plain text). If you extend the Markdown support, keep it node-based; do not
-  introduce a library or `innerHTML`. Thinking/tool blocks stay plain `textContent`.
+  lists, GFM pipe tables, fenced code blocks, blockquotes, bold/italic, code,
+  `http(s)`/`mailto` links — other link schemes degrade to plain text; tables use
+  the `splitTableRow`/`isTableDivider` helpers). If you extend the Markdown support,
+  keep it node-based; do not introduce a library or `innerHTML`. Thinking/tool
+  blocks stay plain `textContent`.
 - **New provider host?** Add it to `host_permissions` in the manifest, or rely on
   the runtime `chrome.permissions.request({origins})` gesture already wired for
   custom base URLs (mirrors the status-check flow in `wireSettings`).
