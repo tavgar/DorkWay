@@ -819,6 +819,7 @@ function resetTriageOutput() {
   const out = $('triage-output');
   out.textContent = '';
   out.classList.remove('hidden');
+  hideTriageDoneBanner();
   triageBlock = null;
   triageReportMd = '';
 }
@@ -963,13 +964,27 @@ function addTriageNote(text) {
   out.scrollTop = out.scrollHeight;
 }
 
-// Compact one-line rendering of the agent's get_results arguments.
+// Compact one-line rendering of a tool call's arguments.
 function triageToolArgs(input) {
   if (!input || typeof input !== 'object') return '';
   return Object.entries(input)
     .filter(([, v]) => v !== '' && v != null)
-    .map(([k, v]) => `${k}: ${v}`)
+    .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.length + ' urls' : v}`)
     .join(', ');
+}
+
+// Tool-aware one-line summary of a tool result (the fields vary by tool name).
+function triageToolResultNote(m) {
+  if (m.name === 'get_stats') {
+    return `↳ ${m.count} group${m.count === 1 ? '' : 's'} across ${m.total} result${m.total === 1 ? '' : 's'}`;
+  }
+  if (m.name === 'check_status') {
+    return `↳ probed ${m.count} · ${m.live || 0} live`;
+  }
+  if (m.countOnly) {
+    return `↳ ${m.total} match${m.total === 1 ? '' : 'es'}`;
+  }
+  return `↳ ${m.count}${m.total > m.count ? ' of ' + m.total : ''} captured result${m.total === 1 ? '' : 's'}`;
 }
 
 function setTriageRunning(running) {
@@ -981,6 +996,27 @@ function setTriageStatus(text, warn = false) {
   const el = $('triage-status');
   el.textContent = text;
   el.style.color = warn ? '#fca5a5' : '';
+}
+
+// A dismissible "run finished" banner shown in-panel on completion — complements
+// the OS notification fired by the background worker for when the panel is open.
+function showTriageDoneBanner(text) {
+  const el = $('triage-done-banner');
+  el.textContent = '';
+  const span = document.createElement('span');
+  span.textContent = text;
+  const close = document.createElement('button');
+  close.className = 'small';
+  close.textContent = '✕';
+  close.title = 'Dismiss';
+  close.setAttribute('aria-label', 'Dismiss');
+  close.onclick = () => el.classList.add('hidden');
+  el.append(span, close);
+  el.classList.remove('hidden');
+}
+
+function hideTriageDoneBanner() {
+  $('triage-done-banner').classList.add('hidden');
 }
 
 // ---- runtime events ----------------------------------------------------------
@@ -1021,16 +1057,19 @@ function wireRuntimeEvents() {
         appendTriage('answer', m.text);
         break;
       case 'TRIAGE_TOOL':
-        addTriageNote(`🔧 get_results(${triageToolArgs(m.input)})`);
+        addTriageNote(`🔧 ${m.name || 'get_results'}(${triageToolArgs(m.input)})`);
         break;
       case 'TRIAGE_TOOL_RESULT':
-        addTriageNote(`↳ ${m.count}${m.total > m.count ? ' of ' + m.total : ''} captured result${m.total === 1 ? '' : 's'}`);
+        addTriageNote(triageToolResultNote(m));
         break;
       case 'TRIAGE_DONE': {
         setTriageRunning(false);
         const tok = m.usage ? ` · ${m.usage.output_tokens ?? m.usage.completion_tokens ?? '?'} output tokens` : '';
         setTriageStatus(m.aborted ? 'Stopped.' : `✓ Triage complete${m.note ? ' (' + m.note + ')' : ''}${tok}`);
-        if (!m.aborted) saveTriageRun(m.usage);
+        if (!m.aborted) {
+          showTriageDoneBanner(`✓ Triage complete — report ready${m.note ? ' · ' + m.note : ''}`);
+          saveTriageRun(m.usage);
+        }
         break;
       }
       case 'TRIAGE_ERROR':

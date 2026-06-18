@@ -8,7 +8,8 @@
     "sidePanel",
     "storage",
     "tabs",
-    "scripting"
+    "scripting",
+    "notifications"
   ],
   "host_permissions": [
     "https://www.google.com/*",
