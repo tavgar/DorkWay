@@ -6,6 +6,17 @@
 (async () => {
   if (window.top !== window) return; // ignore iframes
 
+  // Opt-in gate: do nothing unless the user has started collection in the side
+  // panel. Read the flag straight from storage (cheap) before any extraction or
+  // on-page UI, so normal Googling stays completely untouched while DorkWay is
+  // stopped. Fail closed — if the flag can't be read, capture nothing.
+  try {
+    const { settings } = await chrome.storage.local.get('settings');
+    if (!settings || settings.collectionEnabled !== true) return;
+  } catch (_) {
+    return;
+  }
+
   // Dynamically import the shared ES modules (declared in web_accessible_resources).
   let extractor;
   try {

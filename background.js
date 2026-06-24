@@ -27,6 +27,10 @@ const DEFAULT_SETTINGS = {
   maxDelayMs: 4000,
   disableFilter: true,
   firstRunDone: false,
+  // Master opt-in switch. Capture is gated on this — nothing is stored until the
+  // user clicks Start in the side panel. Default off so a fresh install never
+  // collects from the user's normal Googling.
+  collectionEnabled: false,
   // AI Triage / LLM. Blank baseUrl resolves to the provider default at request time.
   llmProvider: 'anthropic',
   llmBaseUrl: '',
@@ -223,8 +227,16 @@ async function handle(msg, sender) {
 
 async function onCapturePage(payload) {
   const { query, start, page, url, state, entities } = payload;
-  const sessionId = await getActiveSessionId();
   const settings = await getSettings();
+
+  // Opt-in gate: when collection is disabled, persist nothing and tell the content
+  // script to stand down. Checked before touching the session store so a disabled
+  // extension never even auto-creates the default session.
+  if (!settings.collectionEnabled) {
+    return { action: 'stop', reason: 'collection disabled' };
+  }
+
+  const sessionId = await getActiveSessionId();
 
   // Persist entities (stamp the active session; dedup/merge happens in db layer).
   let inserted = 0;

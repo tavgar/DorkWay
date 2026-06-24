@@ -31,31 +31,64 @@ async function init() {
   renderSessions(boot.sessions);
   applySettingsToForm();
 
-  if (!state.settings.firstRunDone) showDisclaimer();
   wireTabs();
   wireResults();
   wireBuilder();
   wireExport();
   wireSettings();
   wireTriage();
+  wireCollection();
   wireRuntimeEvents();
+
+  // Capture is opt-in: until the user presses Start, show the Start screen and
+  // keep the header "Collecting" ribbon hidden.
+  updateCollectionUI();
+  if (!state.settings.collectionEnabled) showStartScreen();
 
   if (boot.job && boot.job.active) setStatusLine(`Auto-pagination active for: ${boot.job.query}`);
   await loadResults();
 }
 
-// ---- disclaimer --------------------------------------------------------------
+// ---- collection start/stop ---------------------------------------------------
 
-function showDisclaimer() {
-  $('disclaimer').classList.remove('hidden');
-  $('disclaimer-ack').addEventListener('change', (e) => {
-    $('disclaimer-ok').disabled = !e.target.checked;
+// Wire the Start screen and the header Stop button once. Capture is gated on the
+// persisted `collectionEnabled` flag (background also enforces it); these controls
+// flip it. The authorised-use acknowledgment only gates the very first Start —
+// once accepted (firstRunDone), the toggle re-starts without re-acking.
+function wireCollection() {
+  $('start-ack').addEventListener('change', (e) => {
+    $('start-ok').disabled = !e.target.checked;
   });
-  $('disclaimer-ok').addEventListener('click', async () => {
-    state.settings.firstRunDone = true;
-    await msg({ type: 'SAVE_SETTINGS', settings: { firstRunDone: true } });
-    $('disclaimer').classList.add('hidden');
-  });
+  $('start-ok').addEventListener('click', startCollection);
+  $('stop-collection').addEventListener('click', stopCollection);
+}
+
+function showStartScreen() {
+  const acked = !!state.settings.firstRunDone;
+  $('start-ack').checked = acked;
+  $('start-ok').disabled = !acked; // returning users can Start straight away
+  $('start-screen').classList.remove('hidden');
+}
+
+async function startCollection() {
+  state.settings.collectionEnabled = true;
+  state.settings.firstRunDone = true;
+  await msg({ type: 'SAVE_SETTINGS', settings: { collectionEnabled: true, firstRunDone: true } });
+  $('start-screen').classList.add('hidden');
+  updateCollectionUI();
+}
+
+async function stopCollection() {
+  state.settings.collectionEnabled = false;
+  await msg({ type: 'SAVE_SETTINGS', settings: { collectionEnabled: false } });
+  // Halt any in-flight auto-pagination walk so it doesn't keep navigating.
+  await msg({ type: 'STOP_PAGINATION' });
+  updateCollectionUI();
+  showStartScreen();
+}
+
+function updateCollectionUI() {
+  $('collection-bar').classList.toggle('hidden', !state.settings.collectionEnabled);
 }
 
 // ---- sessions ----------------------------------------------------------------
