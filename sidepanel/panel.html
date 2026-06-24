@@ -7,20 +7,24 @@
     <link rel="stylesheet" href="panel.css" />
   </head>
   <body>
-    <!-- First-run ethical disclaimer -->
-    <div id="disclaimer" class="overlay hidden">
+    <!-- Start screen / first-run gate. Capture stays off until the user presses Start. -->
+    <div id="start-screen" class="overlay hidden">
       <div class="overlay-card">
-        <h2>⚖️ Authorised use only</h2>
+        <h2>▶ Start DorkWay</h2>
         <p>
-          DorkWay is for <strong>authorised security research and OSINT</strong>. Only run it
-          against assets you own or are explicitly permitted to test. You are responsible for
-          complying with all applicable laws, scope agreements and Google's Terms of Service.
+          DorkWay captures Google search results only while collection is <strong>on</strong>.
+          Nothing is captured until you press Start — and you can stop anytime from the header.
+        </p>
+        <p>
+          For <strong>authorised security research and OSINT</strong> only. Only run it against
+          assets you own or are explicitly permitted to test. You are responsible for complying
+          with all applicable laws, scope agreements and Google's Terms of Service.
         </p>
         <p class="muted">
           The optional status-code check sends outbound HTTP requests directly to target domains.
         </p>
-        <label class="check"><input type="checkbox" id="disclaimer-ack" /> I understand and have authorisation.</label>
-        <button id="disclaimer-ok" class="primary" disabled>Continue</button>
+        <label class="check"><input type="checkbox" id="start-ack" /> I understand and have authorisation.</label>
+        <button id="start-ok" class="primary" disabled>Start collecting</button>
       </div>
     </div>
 
@@ -49,6 +53,12 @@
     </div>
 
     <div class="topbar">
+      <div id="collection-bar" class="collection-bar hidden">
+        <span class="live-dot" aria-hidden="true"></span>
+        <span>Collecting — DorkWay is capturing Google results</span>
+        <span class="spacer"></span>
+        <button id="stop-collection" class="ghost small">Stop</button>
+      </div>
       <header>
         <div class="brand">
           <span class="logo" aria-hidden="true">
