@@ -11,8 +11,8 @@ const state = {
   results: [],
   filtered: [],
   filters: {
-    include: { root: new Set(), sub: new Set(), dir: new Set(), ft: new Set(), tags: new Set(), status: new Set() },
-    exclude: { root: new Set(), sub: new Set(), dir: new Set(), ft: new Set(), tags: new Set(), status: new Set() },
+    include: { root: new Set(), sub: new Set(), dir1: new Set(), dir2: new Set(), ft: new Set(), tags: new Set(), status: new Set() },
+    exclude: { root: new Set(), sub: new Set(), dir1: new Set(), dir2: new Set(), ft: new Set(), tags: new Set(), status: new Set() },
     keyword: ''
   },
   collapsed: new Set()
@@ -22,8 +22,9 @@ const SUB_NONE = '(root)';
 const FT_NONE = '(none)';
 const DIR_NONE = '/';
 
-// Group results by their first two path directories for the URL-directory facet.
-const dirOf = (r) => deriveDirectory(r.path || '/') || DIR_NONE;
+// Group results by their leading path directories for the URL-directory facets:
+// dir1 keeps only the first segment, dir2 the first two.
+const dirOf = (r, depth) => deriveDirectory(r.path || '/', depth) || DIR_NONE;
 
 // ---- bootstrap ---------------------------------------------------------------
 
@@ -149,7 +150,7 @@ async function loadResults() {
 }
 
 function buildFacets() {
-  const facets = { root: new Map(), sub: new Map(), dir: new Map(), ft: new Map(), tags: new Map(), status: new Map() };
+  const facets = { root: new Map(), sub: new Map(), dir1: new Map(), dir2: new Map(), ft: new Map(), tags: new Map(), status: new Map() };
   const bump = (map, key) => map.set(key, (map.get(key) || 0) + 1);
 
   // Cross-filtering: each facet only counts results that pass every *other* active
@@ -162,14 +163,16 @@ function buildFacets() {
   };
   addFacet('root', (r) => bump(facets.root, r.rootDomain || '(unknown)'));
   addFacet('sub', (r) => bump(facets.sub, r.subdomain || SUB_NONE));
-  addFacet('dir', (r) => bump(facets.dir, dirOf(r)));
+  addFacet('dir1', (r) => bump(facets.dir1, dirOf(r, 1)));
+  addFacet('dir2', (r) => bump(facets.dir2, dirOf(r, 2)));
   addFacet('ft', (r) => bump(facets.ft, r.fileType || FT_NONE));
   addFacet('tags', (r) => { for (const t of r.tags || []) bump(facets.tags, t); });
   addFacet('status', (r) => bump(facets.status, String(r.statusCode || 0)));
 
   renderChips('filter-root', facets.root, 'root');
   renderChips('filter-sub', facets.sub, 'sub');
-  renderChips('filter-dir', facets.dir, 'dir');
+  renderChips('filter-dir1', facets.dir1, 'dir1');
+  renderChips('filter-dir2', facets.dir2, 'dir2');
   renderChips('filter-ft', facets.ft, 'ft');
   renderChips('filter-tags', facets.tags, 'tags', true);
   renderChips('filter-status', facets.status, 'status', false, statusLabel);
@@ -227,7 +230,8 @@ function passesFiltersExcept(r, except) {
   const inc = f.include, exc = f.exclude;
   const root = r.rootDomain || '(unknown)';
   const sub = r.subdomain || SUB_NONE;
-  const dir = dirOf(r);
+  const dir1 = dirOf(r, 1);
+  const dir2 = dirOf(r, 2);
   const ft = r.fileType || FT_NONE;
   const tags = r.tags || [];
   const status = String(r.statusCode || 0);
@@ -240,9 +244,13 @@ function passesFiltersExcept(r, except) {
     if (exc.sub.has(sub)) return false;
     if (inc.sub.size && !inc.sub.has(sub)) return false;
   }
-  if (except !== 'dir') {
-    if (exc.dir.has(dir)) return false;
-    if (inc.dir.size && !inc.dir.has(dir)) return false;
+  if (except !== 'dir1') {
+    if (exc.dir1.has(dir1)) return false;
+    if (inc.dir1.size && !inc.dir1.has(dir1)) return false;
+  }
+  if (except !== 'dir2') {
+    if (exc.dir2.has(dir2)) return false;
+    if (inc.dir2.size && !inc.dir2.has(dir2)) return false;
   }
   if (except !== 'ft') {
     if (exc.ft.has(ft)) return false;
@@ -373,7 +381,7 @@ function wireResults() {
   });
   $('toggle-filters').addEventListener('click', () => $('filters').classList.toggle('hidden'));
   $('clear-filters').addEventListener('click', () => {
-    for (const k of ['root', 'sub', 'dir', 'ft', 'tags', 'status']) {
+    for (const k of ['root', 'sub', 'dir1', 'dir2', 'ft', 'tags', 'status']) {
       state.filters.include[k].clear();
       state.filters.exclude[k].clear();
     }
