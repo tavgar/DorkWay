@@ -1,5 +1,6 @@
 // panel.js — DorkWay side panel controller.
 import { TAG_COLORS } from '../lib/tags.js';
+import { deriveDirectory } from '../lib/url-clean.js';
 
 const $ = (id) => document.getElementById(id);
 const msg = (m) => chrome.runtime.sendMessage(m);
@@ -10,8 +11,8 @@ const state = {
   results: [],
   filtered: [],
   filters: {
-    include: { root: new Set(), sub: new Set(), ft: new Set(), tags: new Set(), status: new Set() },
-    exclude: { root: new Set(), sub: new Set(), ft: new Set(), tags: new Set(), status: new Set() },
+    include: { root: new Set(), sub: new Set(), dir: new Set(), ft: new Set(), tags: new Set(), status: new Set() },
+    exclude: { root: new Set(), sub: new Set(), dir: new Set(), ft: new Set(), tags: new Set(), status: new Set() },
     keyword: ''
   },
   collapsed: new Set()
@@ -19,6 +20,10 @@ const state = {
 
 const SUB_NONE = '(root)';
 const FT_NONE = '(none)';
+const DIR_NONE = '/';
+
+// Group results by their first two path directories for the URL-directory facet.
+const dirOf = (r) => deriveDirectory(r.path || '/') || DIR_NONE;
 
 // ---- bootstrap ---------------------------------------------------------------
 
@@ -144,7 +149,7 @@ async function loadResults() {
 }
 
 function buildFacets() {
-  const facets = { root: new Map(), sub: new Map(), ft: new Map(), tags: new Map(), status: new Map() };
+  const facets = { root: new Map(), sub: new Map(), dir: new Map(), ft: new Map(), tags: new Map(), status: new Map() };
   const bump = (map, key) => map.set(key, (map.get(key) || 0) + 1);
 
   // Cross-filtering: each facet only counts results that pass every *other* active
@@ -157,12 +162,14 @@ function buildFacets() {
   };
   addFacet('root', (r) => bump(facets.root, r.rootDomain || '(unknown)'));
   addFacet('sub', (r) => bump(facets.sub, r.subdomain || SUB_NONE));
+  addFacet('dir', (r) => bump(facets.dir, dirOf(r)));
   addFacet('ft', (r) => bump(facets.ft, r.fileType || FT_NONE));
   addFacet('tags', (r) => { for (const t of r.tags || []) bump(facets.tags, t); });
   addFacet('status', (r) => bump(facets.status, String(r.statusCode || 0)));
 
   renderChips('filter-root', facets.root, 'root');
   renderChips('filter-sub', facets.sub, 'sub');
+  renderChips('filter-dir', facets.dir, 'dir');
   renderChips('filter-ft', facets.ft, 'ft');
   renderChips('filter-tags', facets.tags, 'tags', true);
   renderChips('filter-status', facets.status, 'status', false, statusLabel);
@@ -220,6 +227,7 @@ function passesFiltersExcept(r, except) {
   const inc = f.include, exc = f.exclude;
   const root = r.rootDomain || '(unknown)';
   const sub = r.subdomain || SUB_NONE;
+  const dir = dirOf(r);
   const ft = r.fileType || FT_NONE;
   const tags = r.tags || [];
   const status = String(r.statusCode || 0);
@@ -231,6 +239,10 @@ function passesFiltersExcept(r, except) {
   if (except !== 'sub') {
     if (exc.sub.has(sub)) return false;
     if (inc.sub.size && !inc.sub.has(sub)) return false;
+  }
+  if (except !== 'dir') {
+    if (exc.dir.has(dir)) return false;
+    if (inc.dir.size && !inc.dir.has(dir)) return false;
   }
   if (except !== 'ft') {
     if (exc.ft.has(ft)) return false;
@@ -361,7 +373,7 @@ function wireResults() {
   });
   $('toggle-filters').addEventListener('click', () => $('filters').classList.toggle('hidden'));
   $('clear-filters').addEventListener('click', () => {
-    for (const k of ['root', 'sub', 'ft', 'tags', 'status']) {
+    for (const k of ['root', 'sub', 'dir', 'ft', 'tags', 'status']) {
       state.filters.include[k].clear();
       state.filters.exclude[k].clear();
     }
