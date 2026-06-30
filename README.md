@@ -47,7 +47,8 @@ auto-tags, SERP rank/page, and a status dot (grey = unchecked, otherwise the HTT
 
 - **Keyword box** filters across title, snippet, and path.
 - **Filters** (the drawer in the screenshot) gives faceted chips for root domain, subdomain,
-  URL directory (the first two path segments, e.g. `/wp-content/uploads`), file type, tags, and
+  URL directory (two folded views — group by the 1st path segment, e.g. `/wp-content`, or by the
+  1st two, e.g. `/wp-content/uploads`), file type, tags, and
   status. **Left-click a chip to include, right-click to exclude.** Counts
   cross-filter — picking a root narrows the other facet lists to what's still reachable.
 - **Expand / Collapse** toggle the whole tree.

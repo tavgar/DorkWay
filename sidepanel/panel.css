@@ -344,6 +344,18 @@ input[type="checkbox"]:focus-visible { box-shadow: 0 0 0 3px var(--ring); }
   font-size: 10px; text-transform: uppercase; color: var(--faint);
   letter-spacing: .07em; margin-bottom: 6px; font-weight: 600;
 }
+/* Foldable filter group (collapsed by default via <details>). */
+.filter-fold > summary {
+  cursor: pointer; user-select: none; list-style: none;
+  display: flex; align-items: center; gap: 5px;
+}
+.filter-fold > summary::-webkit-details-marker { display: none; }
+.filter-fold > summary::before {
+  content: '▸'; color: var(--faint); font-size: 9px;
+}
+.filter-fold[open] > summary::before { content: '▾'; }
+.filter-fold > summary h4 { margin-bottom: 0; }
+.filter-fold[open] > .chips { margin-top: 6px; }
 .chips { display: flex; flex-wrap: wrap; gap: 5px; }
 .chip {
   font-size: 11px; padding: 3px 9px; border-radius: 999px;
